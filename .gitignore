@@ -1,0 +1,9 @@
+bin/
+obj/
+dist/
+artifacts/
+reports/
+ks_data/
+*.user
+.vs/
+__pycache__/

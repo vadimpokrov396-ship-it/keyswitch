@@ -1,0 +1,116 @@
+namespace KeySwitch.Core;
+
+public sealed record BoundaryResult(string Original, string Replacement, bool Changed, int PreviousCharacters, string Reason, double Confidence);
+
+/// <summary>Shared live-input and corpus replay boundary policy. State is memory-only.</summary>
+public sealed class BoundaryEngine(DecisionEngine engine, bool legacy = false,
+    Func<string, IEnumerable<string>?, DecisionResult>? baselineEvaluator = null)
+{
+    private readonly TypoCorrector typo = new(engine);
+    public bool LayoutEnabled { get; set; } = true;
+    public bool TypoEnabled { get; set; } = true;
+    public IEnumerable<string>? TypoExceptions { get; set; }
+    private readonly List<string> context = new();
+    private string? previousUnconvertedShort;
+    private readonly LegacyDecisionEngine oldEngine = new();
+    public static bool IsTokenCharacter(char c) => char.IsLetterOrDigit(c) || "`,.;'[]~{}:\"<>@/_-\\#?&=%+".Contains(c);
+    public void Reset() { context.Clear(); previousUnconvertedShort = null; }
+    public BoundaryResult Complete(string token, string separator, IEnumerable<string>? exceptions = null)
+    {
+        if (token.Length == 0)
+        {
+            previousUnconvertedShort = null;
+            if (separator != " ") Reset();
+            return new("", "", false, 0, "empty", 0);
+        }
+        DecisionResult Evaluate(string text) => !LayoutEnabled ? new(false, text, text, 0, "layout-disabled") :
+            legacy ? (baselineEvaluator?.Invoke(text, exceptions) ?? oldEngine.Evaluate(text, exceptions)) :
+            engine.Evaluate(text, context.LastOrDefault(), context.Count > 1 ? context[^2] : null, exceptions);
+        var decision = Evaluate(token);
+        if (decision.Reason == "exception")
+        {
+            Reset();
+            return new(token, token, false, 0, "exception", 0);
+        }
+        string tail = "";
+        string head = "";
+        bool TargetKnown(DecisionResult value)
+        {
+            if (!value.ShouldConvert) return false;
+            bool russian = value.Converted.Any(c => c is >= 'а' and <= 'я' or >= 'А' and <= 'Я' or 'ё' or 'Ё');
+            return engine.IsKnownWord(value.Converted, russian);
+        }
+        // A physical comma/dot can be a Russian letter, but punctuation after
+        // an ordinary word is much more common. Keep it as punctuation unless
+        // the complete converted form is a known word.
+        if (!TargetKnown(decision))
+        {
+            int end = token.Length;
+            while (end > 0 && ",.;:!?\"'»)]}".Contains(token[end - 1])) end--;
+            if (end > 0 && end < token.Length)
+            {
+                decision = Evaluate(token[..end]);
+                tail = token[end..];
+            }
+        }
+        if (!TargetKnown(decision) && token.Length > 1)
+        {
+            int start = 0;
+            while (start < token.Length - tail.Length && "\"'[{<".Contains(token[start])) start++;
+            if (start > 0 && start < token.Length - tail.Length)
+            {
+                var inner = Evaluate(token[start..(token.Length - tail.Length)]);
+                if (inner.ShouldConvert) { head = token[..start]; decision = inner; }
+            }
+        }
+        string replacement = decision.ShouldConvert ? head + decision.Converted + tail : token;
+        string reason = decision.Reason;
+        double confidence = decision.Confidence;
+        bool typoChanged = false;
+        if (!legacy && TypoEnabled &&
+            exceptions?.Any(x => string.Equals(x, token, StringComparison.OrdinalIgnoreCase)) != true &&
+            !token.Any(c => char.IsDigit(c) || "@/\\_+=#%-".Contains(c)))
+        {
+            int start = 0, end = replacement.Length;
+            while (start < end && "\"'([{<«".Contains(replacement[start])) start++;
+            while (end > start && ",.;:!?\"'»)]}>".Contains(replacement[end - 1])) end--;
+            if (start < end)
+            {
+                var allTypoExceptions = exceptions is null ? TypoExceptions :
+                    TypoExceptions is null ? exceptions : exceptions.Concat(TypoExceptions);
+                var typoDecision = typo.Evaluate(replacement[start..end], context.LastOrDefault(),
+                    context.Count > 1 ? context[^2] : null, allTypoExceptions);
+                if (typoDecision.ShouldCorrect)
+                {
+                    replacement = replacement[..start] + typoDecision.Corrected + replacement[end..];
+                    typoChanged = true;
+                    reason = typoDecision.Reason;
+                    confidence = typoDecision.Confidence;
+                }
+            }
+        }
+        int previousCharacters = 0;
+        string original = token;
+        if (!legacy && decision.ShouldConvert && previousUnconvertedShort is { Length: > 0 and <= 3 } shortWord &&
+            SameScript(shortWord, token))
+        {
+            var retro = engine.Evaluate(shortWord, decision.Converted, null, exceptions);
+            if (retro.ShouldConvert)
+            {
+                previousCharacters = shortWord.Length + 1;
+                original = shortWord + " " + token;
+                replacement = retro.Converted + " " + replacement;
+                if (context.Count > 0) context[^1] = retro.Converted;
+            }
+        }
+        context.Add(replacement.TrimEnd(',', '.', ';', ':', '!', '?'));
+        if (context.Count > 2) context.RemoveAt(0);
+        previousUnconvertedShort = separator == " " && !decision.ShouldConvert &&
+            token.Length <= 3 && token.All(char.IsLetter) ? token : null;
+        if (separator != " " || tail.IndexOfAny(['.', '!', '?']) >= 0) Reset();
+        return new(original, replacement, decision.ShouldConvert || typoChanged, previousCharacters, reason, confidence);
+    }
+    private static bool SameScript(string a, string b) =>
+        (a.Any(c => c is >= 'a' and <= 'z' or >= 'A' and <= 'Z')) ==
+        (b.Any(c => c is >= 'a' and <= 'z' or >= 'A' and <= 'Z'));
+}
