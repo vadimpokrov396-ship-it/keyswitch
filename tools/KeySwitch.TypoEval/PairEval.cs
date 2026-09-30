@@ -14,6 +14,22 @@ static class PairEval
         var corrector = new TypoCorrector(new DecisionEngine());
         var report = new Dictionary<string, object>();
         var total = new PairCounts();
+        // Threshold variants for tuning on the dev set, run through the same TypoCorrector code as the app.
+        // Auto variants keep the 2.2 base lead and sweep the Russian lead offline from the recorded confidence;
+        // manual variants (Pause) are scored on real typos only, since Pause is pressed on a misspelled word.
+        var autoSweep = TypoPolicy.Auto with { RussianMinMargin = 0 };
+        var manualSweep = TypoPolicy.Manual with { MinMargin = 0, RussianMinMargin = 0 };
+        var variants = new List<Variant>
+        {
+            new("auto rank<=25k", autoSweep with { RussianRankCap = 25000 }, false),
+            new("auto rank<=50k", autoSweep with { RussianRankCap = 50000 }, false),
+            new("auto rank<=100k", autoSweep with { RussianRankCap = 100000 }, false),
+            new("auto rank<=200k", autoSweep with { RussianRankCap = 200000 }, false),
+            new("auto rank<=50k +2 edits for 8+ letters", autoSweep with { RussianDistance2MinLength = 8 }, false),
+            new("manual rank<=50k", manualSweep, true),
+            new("manual rank<=200k", manualSweep with { RussianRankCap = 200000 }, true),
+            new("manual rank<=50k +2 edits for 8+ letters", manualSweep with { RussianDistance2MinLength = 8 }, true),
+        };
         foreach (var input in inputs)
         {
             var counts = new PairCounts();
@@ -23,18 +39,19 @@ static class PairEval
                 using var row = JsonDocument.Parse(line);
                 string source = row.RootElement.GetProperty("source").GetString()!.Trim('﻿');
                 string correction = row.RootElement.GetProperty("correction").GetString()!.Trim('﻿');
-                Evaluate(corrector, source, correction, counts);
+                Evaluate(corrector, source, correction, counts, variants);
             }
             report[Path.GetFileName(Path.GetDirectoryName(Path.GetFullPath(input))) + "/" + Path.GetFileName(input)] = counts.Summary();
             total.Add(counts);
         }
         report["total"] = total.Summary();
+        report["variants"] = variants.ToDictionary(v => v.Name, v => v.Summary(total.Typos, total.CleanWords));
         var json = JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
         File.WriteAllText(output, json);
         Console.WriteLine(json);
     }
 
-    private static void Evaluate(TypoCorrector corrector, string source, string correction, PairCounts counts)
+    private static void Evaluate(TypoCorrector corrector, string source, string correction, PairCounts counts, List<Variant> variants)
     {
         var typed = Word.Matches(source).Select(x => x.Value).ToArray();
         var fixedWords = Word.Matches(correction).Select(x => x.Value).ToArray();
@@ -65,9 +82,18 @@ static class PairEval
                     else { counts.WrongCorrections++; bucket[1]++; counts.AddExample(counts.WrongExamples, $"{word} -> {decision.Corrected} (expected {expected})"); }
                 }
                 else if (!clean && !ignored) counts.AddExample(counts.MissExamples, $"{word} -> {expected} ({decision.Reason})");
-                // Manual mode (Pause on a misspelled word): would the suggestion be the intended word?
-                if (!clean && !ignored && corrector.Suggest(word, null, null, null, 0) is { ShouldCorrect: true } suggestion)
+                // Manual mode (Pause on a misspelled word, no context): would the suggestion be the intended word?
+                if (!clean && !ignored && corrector.Suggest(word, null, null, null, TypoPolicy.Manual with { MinMargin = 0, RussianMinMargin = 0 }) is { ShouldCorrect: true } suggestion)
                     counts.Suggestions.Add((suggestion.Confidence, Normalize(suggestion.Corrected) == Normalize(expected)));
+                if (!ignored)
+                    foreach (var variant in variants)
+                    {
+                        if (variant.Manual && clean) continue;
+                        var result = variant.Manual ? corrector.Suggest(word, null, null, null, variant.Policy)
+                            : corrector.Evaluate(word, previous, previous2, null, variant.Policy);
+                        if (result.ShouldCorrect)
+                            variant.Changes.Add((result.Confidence, clean ? 2 : Normalize(result.Corrected) == Normalize(expected) ? 0 : 1));
+                    }
             }
             previous2 = previous;
             previous = word.ToLowerInvariant();
@@ -165,4 +191,24 @@ sealed class PairCounts
             FalseExamples, WrongExamples, MissExamples,
         };
     }
+}
+
+sealed record Variant(string Name, TypoPolicy Policy, bool Manual)
+{
+    // (confidence, outcome 0 = intended word, 1 = wrong word, 2 = changed a correct word)
+    public List<(double Confidence, int Outcome)> Changes { get; } = new();
+    public object Summary(int typos, int cleanWords) =>
+        (Manual ? new[] { 1.0, 2.0, 2.5, 3.0, 4.0 } : new[] { 2.2, 3.0, 4.0, 5.0 }).ToDictionary(
+            t => t.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture), t =>
+            {
+                int right = Changes.Count(x => x.Confidence >= t && x.Outcome == 0), wrong = Changes.Count(x => x.Confidence >= t && x.Outcome == 1),
+                    falseOnClean = Changes.Count(x => x.Confidence >= t && x.Outcome == 2);
+                return new
+                {
+                    Right = right, Wrong = wrong, FalseOnClean = falseOnClean,
+                    Precision = Math.Round((double)right / Math.Max(1, right + wrong + falseOnClean), 4),
+                    Recall = Math.Round((double)right / Math.Max(1, typos), 4),
+                    FalseRate = Math.Round((double)falseOnClean / Math.Max(1, cleanWords), 5),
+                };
+            });
 }

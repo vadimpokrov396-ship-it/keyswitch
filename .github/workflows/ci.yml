@@ -79,6 +79,11 @@ jobs:
           dotnet build tools/KeySwitch.TypoEval -c Release -v q
           for part in dev $([ "$FINAL_TEST" = true ] && echo test); do
             dotnet run --no-build --project tools/KeySwitch.TypoEval -c Release -- --pairs eval/$part.report.json $(find eval/$part -name '*.json' | sort) > /dev/null; done
+      - name: Owner typos (regression set)
+        run: |
+          dotnet run --no-build --project tools/KeySwitch.TypoEval -c Release -- --owner tests/KeySwitch.Core.Tests/fixtures/owner_typos.txt > eval/owner.md
+          { echo "## owner_typos"; echo; cat eval/owner.md; echo; } >> "$GITHUB_STEP_SUMMARY"
+          cat eval/owner.md
       - name: Dev examples (for tuning)
         run: |
           python3 - <<'PY'
@@ -113,6 +118,12 @@ jobs:
           print("|---:|---:|---:|")
           for t, r in json.load(open("eval/dev.report.json"))["total"]["ManualSweep"].items():
               print(f"| {t} | {r['Accuracy']:.2%} | {r['Coverage']:.2%} |")
+          print("\n### Threshold variants (dev): right / wrong / changed-correct, precision, recall\n")
+          print("| variant | lead | right | wrong | false | precision | recall | false rate |")
+          print("|---|---:|---:|---:|---:|---:|---:|---:|")
+          for name, sweep in json.load(open("eval/dev.report.json"))["variants"].items():
+              for t, r in sweep.items():
+                  print(f"| {name} | {t} | {r['Right']} | {r['Wrong']} | {r['FalseOnClean']} | {r['Precision']:.2%} | {r['Recall']:.2%} | {r['FalseRate']:.3%} |")
           PY
           cat "$GITHUB_STEP_SUMMARY"
       - name: Upload reports

@@ -19,6 +19,12 @@ public sealed class TypoCorrector
         public readonly Dictionary<string, List<Entry>> Deletes = new(StringComparer.Ordinal);
         public bool Ranked(string word) => Words.ContainsKey(Plain(word));
         public Entry? Find(string word) => Words.GetValueOrDefault(Plain(word));
+        private Dictionary<int, List<Entry>>? byLength;
+        public IReadOnlyList<Entry> OfLength(int length)
+        {
+            byLength ??= Words.Values.GroupBy(x => x.Word.Length).ToDictionary(g => g.Key, g => g.ToList());
+            return byLength.TryGetValue(length, out var entries) ? entries : Array.Empty<Entry>();
+        }
         public readonly Dictionary<string, double> Trigrams = new(StringComparer.Ordinal);
         public double TotalTrigrams;
         public readonly int Alphabet;
@@ -83,17 +89,17 @@ public sealed class TypoCorrector
     public TypoCorrector(DecisionEngine? layout = null) => this.layout = layout ?? new DecisionEngine();
 
     public TypoDecision Evaluate(string word, string? previous = null, string? previous2 = null,
-        IEnumerable<string>? exceptions = null) => Decide(word, previous, previous2, exceptions, null);
+        IEnumerable<string>? exceptions = null) => Evaluate(word, previous, previous2, exceptions, TypoPolicy.Auto);
 
-    /// <summary>Spelling fix the user asked for (Pause / double Shift) with a lower bar than automatic correction:
-    /// works while Russian auto-correction is off and accepts a candidate leading every rival by
-    /// <paramref name="minMargin"/>. A capitalized word is fixed in lower case and re-capitalized.</summary>
+    /// <summary>Spelling fix the user asked for (Pause / double Shift) with <see cref="TypoPolicy.Manual"/>: works
+    /// while Russian auto-correction is off and has a lower bar. A capitalized word is fixed in lower case and
+    /// re-capitalized.</summary>
     public TypoDecision Suggest(string word, string? previous = null, string? previous2 = null,
-        IEnumerable<string>? exceptions = null, double minMargin = ManualMargin)
+        IEnumerable<string>? exceptions = null, TypoPolicy? policy = null)
     {
         bool capitalized = word.Length > 1 && char.IsUpper(word[0]) && !word.Skip(1).Any(char.IsUpper);
         string lower = capitalized ? char.ToLowerInvariant(word[0]) + word[1..] : word;
-        var decision = Decide(lower, previous, previous2, exceptions, minMargin);
+        var decision = Evaluate(lower, previous, previous2, exceptions, policy ?? TypoPolicy.Manual);
         if (!decision.ShouldCorrect || !capitalized) return decision with { Original = word };
         return decision with { Original = word, Corrected = char.ToUpperInvariant(decision.Corrected[0]) + decision.Corrected[1..] };
     }
@@ -102,9 +108,10 @@ public sealed class TypoCorrector
     /// ManualSweep) at which at least 95% of suggestions for real typos are the intended word (dev: 95.4%, 32.2% fixed).</summary>
     public const double ManualMargin = 2.5;
 
-    private TypoDecision Decide(string word, string? previous, string? previous2, IEnumerable<string>? exceptions, double? manualMargin)
+    /// <summary>Decides with explicit thresholds; the shipped modes are <see cref="TypoPolicy.Auto"/> and
+    /// <see cref="TypoPolicy.Manual"/>, TypoEval sweeps other values on the dev set.</summary>
+    public TypoDecision Evaluate(string word, string? previous, string? previous2, IEnumerable<string>? exceptions, TypoPolicy policy)
     {
-        bool manual = manualMargin is not null;
         TypoDecision Keep(string reason) => new(false, word, word, 0, reason);
         if (word.Length < 4 || word.Length > 32 || !word.All(char.IsLetter)) return Keep("protected-shape");
         if (word.Any(char.IsDigit) || word.All(char.IsUpper) || char.IsUpper(word[0]) || word.Skip(1).Any(char.IsUpper))
@@ -113,20 +120,29 @@ public sealed class TypoCorrector
         bool russian = word.All(c => c is >= 'а' and <= 'я' or 'ё');
         bool english = word.All(c => c is >= 'a' and <= 'z');
         if (!russian && !english) return Keep("protected-script");
-        if (russian && !RussianEnabled && !manual) return Keep("ru-typo-disabled");
+        if (russian && !RussianEnabled && !policy.IgnoreRussianSwitch) return Keep("ru-typo-disabled");
         // Four-letter Russian words have too many real neighbours (таку -> так, блан -> план) to change safely.
-        if (russian && word.Length < 5 && !manual) return Keep("protected-shape");
+        if (russian && word.Length < policy.RussianMinLength) return Keep("protected-shape");
         if (layout.IsKnownWord(word, russian)) return Keep("known-original");
         if (russian && RussianSeen.Value.Contains(Plain(word.ToLowerInvariant()))) return Keep("known-corpus");
         var data = russian ? Ru.Value : En.Value;
         string lower = word.ToLowerInvariant();
-        // Two-edit corrections in Russian were mostly wrong on real typos (dev set: 13 right, 51 wrong or false).
         int maxDistance = !russian && lower.Length >= 8 ? 2 : 1;
         var candidates = new HashSet<Entry>();
         if (russian)
         {
             foreach (var edit in SingleEdits(lower, RussianLetters))
                 if (data.Find(edit) is { } entry) candidates.Add(entry);
+            // Two edits only as a fallback for long words, and only when the policy asks for it: a bounded scan
+            // of the ranked forms within two letters of the typed length (early-exit edit distance).
+            if (candidates.Count == 0 && lower.Length >= policy.RussianDistance2MinLength)
+            {
+                maxDistance = 2;
+                string plainTyped = Plain(lower);
+                for (int length = lower.Length - 2; length <= lower.Length + 2; length++)
+                    foreach (var entry in data.OfLength(length))
+                        if (EditDistance(plainTyped, Plain(entry.Word), 2) == 2) candidates.Add(entry);
+            }
         }
         else
             foreach (var deleted in DeletesOf(lower, maxDistance))
@@ -140,8 +156,8 @@ public sealed class TypoCorrector
             string plain = Plain(entry.Word);
             int distance = EditDistance(Plain(lower), plain, maxDistance);
             if (distance == 0 || distance > maxDistance) continue;
-            // A second edit requires a common destination and a plausible word shape.
-            if (distance == 2 && (entry.Rank > 10000 || lower.Length < 8)) continue;
+            // A second English edit requires a common destination and a plausible word shape.
+            if (!russian && distance == 2 && (entry.Rank > 10000 || lower.Length < 8)) continue;
             double cost = distance == 2 ? 3.2 : EditCost(Plain(lower), plain, russian);
             scored.Add((entry, Score(data, entry.Word, entry.Rank, cost, previous, previous2, russian), cost));
         }
@@ -151,8 +167,8 @@ public sealed class TypoCorrector
         double margin = scored.Count == 1 ? 4 : best.Score - scored[1].Score;
         // A strict margin protects unknown names and foreign words absent from the Bloom lexicon.
         // The Russian list holds word forms, so the same frequency spans far more ranks than in a lemma list.
-        double required = manualMargin ?? 2.2;
-        if (margin < required || best.Entry.Rank > (russian ? RussianRankCap : 12000)) return Keep("ambiguous-candidate");
+        double required = policy.MinMargin;
+        if (margin < required || best.Entry.Rank > (russian ? policy.RussianRankCap : policy.EnglishRankCap)) return Keep("ambiguous-candidate");
         // The ranked list holds only frequent words. A real form from the full lexicon (OpenCorpora for RU) one edit
         // away is scored as if it were just below the ranked list (its true frequency can only be lower); if it
         // comes within the margin of the best candidate, the intended word is unclear.
@@ -161,8 +177,8 @@ public sealed class TypoCorrector
             if (best.Score - rival < required) return Keep("ambiguous-form");
             margin = Math.Min(margin, best.Score - rival);
         }
-        if (!manual && russian && margin < RussianMargin) return Keep("ambiguous-candidate");
-        return new(true, word, best.Entry.Word, margin, manual ? "typo-manual" : "typo-autocorrect");
+        if (russian && margin < policy.RussianMinMargin) return Keep("ambiguous-candidate");
+        return new(true, word, best.Entry.Word, margin, policy.Reason);
     }
 
     private double Score(LanguageData data, string candidate, int rank, double cost, string? previous, string? previous2, bool russian)
@@ -174,7 +190,7 @@ public sealed class TypoCorrector
         return frequency - 1.5 * cost + 0.65 * language + 0.3 * modelLanguage + context;
     }
 
-    private const int RussianRankCap = 50000;
+    internal const int RussianRankCap = 50000;
     // Minimum lead of the best Russian candidate over every rival, calibrated per candidate list on the dev set
     // (TypoEval --pairs): 4.0 with the word-form list (test: 88.8% precision, 22.8% recall), 2.2 with the lemma list.
     internal static double RussianMargin => RussianFormList ? 4.0 : 2.2;
@@ -314,4 +330,15 @@ public sealed class TypoCorrector
         }
         return false;
     }
+}
+
+/// <summary>Thresholds of one correction mode. <see cref="Auto"/> and <see cref="Manual"/> are what KeySwitch uses;
+/// TypoEval --pairs evaluates other values on the dev set with exactly the same code path.</summary>
+public sealed record TypoPolicy(double MinMargin, double RussianMinMargin, int RussianRankCap, int EnglishRankCap,
+    int RussianMinLength, bool IgnoreRussianSwitch, int RussianDistance2MinLength, string Reason)
+{
+    /// <summary>Automatic correction at a word boundary.</summary>
+    public static TypoPolicy Auto => new(2.2, TypoCorrector.RussianMargin, TypoCorrector.RussianRankCap, 12000, 5, false, int.MaxValue, "typo-autocorrect");
+    /// <summary>Pause / double Shift on a word: works with Russian auto-correction off, lower bar.</summary>
+    public static TypoPolicy Manual => new(TypoCorrector.ManualMargin, TypoCorrector.ManualMargin, TypoCorrector.RussianRankCap, 12000, 4, true, int.MaxValue, "typo-manual");
 }
