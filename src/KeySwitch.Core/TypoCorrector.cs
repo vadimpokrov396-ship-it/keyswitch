@@ -105,7 +105,8 @@ public sealed class TypoCorrector
     }
 
     /// <summary>Minimum candidate lead for <see cref="Suggest"/>: the lowest dev-set threshold (TypoEval --pairs,
-    /// ManualSweep) at which at least 95% of suggestions for real typos are the intended word (dev: 95.4%, 32.2% fixed).</summary>
+    /// ManualSweep) at which at least 95% of suggestions for real typos are the intended word
+    /// (dev, whole form list: 95.8% right, 39.5% of typos fixed).</summary>
     public const double ManualMargin = 2.5;
 
     /// <summary>Decides with explicit thresholds; the shipped modes are <see cref="TypoPolicy.Auto"/> and
@@ -339,6 +340,8 @@ public sealed record TypoPolicy(double MinMargin, double RussianMinMargin, int R
 {
     /// <summary>Automatic correction at a word boundary.</summary>
     public static TypoPolicy Auto => new(2.2, TypoCorrector.RussianMargin, TypoCorrector.RussianRankCap, 12000, 5, false, int.MaxValue, "typo-autocorrect");
-    /// <summary>Pause / double Shift on a word: works with Russian auto-correction off, lower bar.</summary>
-    public static TypoPolicy Manual => new(TypoCorrector.ManualMargin, TypoCorrector.ManualMargin, TypoCorrector.RussianRankCap, 12000, 4, true, int.MaxValue, "typo-manual");
+    /// <summary>Pause / double Shift on a word: works with Russian auto-correction off, lower bar, whole form list
+    /// (dev: rank cap 200k beats 50k on both accuracy and coverage). Two edits stay off in both modes: on the dev
+    /// set they lowered precision at every threshold, also for 8+ letter words.</summary>
+    public static TypoPolicy Manual => new(TypoCorrector.ManualMargin, TypoCorrector.ManualMargin, 200000, 12000, 4, true, int.MaxValue, "typo-manual");
 }
