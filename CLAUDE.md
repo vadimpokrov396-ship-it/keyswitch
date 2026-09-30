@@ -19,3 +19,7 @@ KeySwitch is a keyboard layout auto-switcher for Windows (RU/EN): tray app, C# .
 - Precision first: a wrong automatic switch is worse than a missed one. Keep false-switch rate on clean text ≤ 0.1%.
 - Privacy: no network in the auto-correction path, no telemetry, no logging of typed text to disk.
 - See `TODO.md` for the current work list.
+
+## Releases (important)
+- Releases are created ONLY by CI when a `v*` tag is pushed (`git tag vX.Y.Z && git push origin vX.Y.Z`), after bumping `<Version>`/`<FileVersion>` in `src/KeySwitch.App/KeySwitch.App.csproj`.
+- Never publish a release manually in the GitHub UI: the repo uses immutable releases, so a manually published (empty) release can't get the zips attached later and its tag can never be reused (this happened with v1.2.2 → re-released as v1.2.3).
