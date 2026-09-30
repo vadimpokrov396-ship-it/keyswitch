@@ -127,7 +127,7 @@ internal sealed class KeyboardController : IDisposable
                     }
                 }
                 else if (key.dwExtraInfo != Native.InjectionTag) Post(Reset);
-                Diagnostics.Write($"event vk={key.vkCode} scan={key.scanCode} flags=0x{key.flags:X} injected={injected} accepted={(!injected || testKey)} suppress={suppress} callback_us={(Stopwatch.GetTimestamp() - started) * 1000000 / Stopwatch.Frequency}");
+                Diagnostics.Write($"event vk={LoggedKey((Keys)key.vkCode)} flags=0x{key.flags:X} injected={injected} accepted={(!injected || testKey)} suppress={suppress} callback_us={(Stopwatch.GetTimestamp() - started) * 1000000 / Stopwatch.Frequency}");
             }
         }
         catch (Exception error) { Diagnostics.Write($"hook_exception={error.GetType().Name} hresult=0x{error.HResult:X}"); Post(Reset); }
@@ -357,6 +357,11 @@ internal sealed class KeyboardController : IDisposable
         if (settings.ConvertHotkey.Matches(key, shift, control, alt)) { action = 0; return true; }
         action = -1; return false;
     }
+    // Character-producing keys are logged only as "text" so the diagnostic log cannot reconstruct typed input.
+    private static string LoggedKey(Keys vk) =>
+        vk is >= Keys.A and <= Keys.Z or >= Keys.D0 and <= Keys.D9 or >= Keys.NumPad0 and <= Keys.Divide
+            or >= Keys.OemSemicolon and <= Keys.Oemtilde or >= Keys.OemOpenBrackets and <= Keys.OemBackslash
+            ? "text" : ((int)vk).ToString();
     private static bool Down(Keys key) => (Native.GetAsyncKeyState((int)key) & 0x8000) != 0;
     private static bool Same(FocusTarget a, FocusTarget b) => a.Window != IntPtr.Zero && a.Window == b.Window && a.Focus == b.Focus;
     private static bool IsRussian(string value) => value.Any(c => c is >= 'А' and <= 'я' or 'ё' or 'Ё');
