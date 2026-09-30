@@ -98,11 +98,7 @@ public sealed class TypoCorrector
             // A second edit requires a common destination and a plausible word shape.
             if (distance == 2 && (entry.Rank > 10000 || lower.Length < 8)) continue;
             double cost = distance == 2 ? 3.2 : EditCost(lower, entry.Word, russian);
-            double frequency = -Math.Log(entry.Rank + 15);
-            double language = data.LanguageScore(entry.Word);
-            double modelLanguage = Math.Log(Math.Max(1e-6, layout.LanguageProbability(entry.Word, previous, previous2)));
-            double context = ContextScore(previous, previous2, russian);
-            scored.Add((entry, frequency - 1.5 * cost + 0.65 * language + 0.3 * modelLanguage + context, cost));
+            scored.Add((entry, Score(data, entry.Word, entry.Rank, cost, previous, previous2, russian), cost));
         }
         if (scored.Count == 0) return Keep("no-candidate");
         scored.Sort((a, b) => b.Score.CompareTo(a.Score));
@@ -110,25 +106,36 @@ public sealed class TypoCorrector
         double margin = scored.Count == 1 ? 4 : best.Score - scored[1].Score;
         // A strict margin protects unknown names and foreign words absent from the Bloom lexicon.
         if (margin < 2.2 || best.Entry.Rank > 12000) return Keep("ambiguous-candidate");
-        // The ranked list holds only frequent words. A real form from the full lexicon (OpenCorpora for RU) that is
-        // one edit away and at least as plausible an edit is an unranked rival: the intended word is unclear.
-        if (russian && HasUnrankedRival(lower, data, best.Entry.Word, best.Cost)) return Keep("ambiguous-form");
+        // The ranked list holds only frequent words. A real form from the full lexicon (OpenCorpora for RU) one edit
+        // away is scored as if it were just below the ranked list (its true frequency can only be lower); if it
+        // comes within the margin of the best candidate, the intended word is unclear.
+        if (russian && BestUnrankedRival(lower, data, best.Entry.Word, previous, previous2) is double rival &&
+            best.Score - rival < 2.2) return Keep("ambiguous-form");
         return new(true, word, best.Entry.Word, margin, "typo-autocorrect");
+    }
+
+    private double Score(LanguageData data, string candidate, int rank, double cost, string? previous, string? previous2, bool russian)
+    {
+        double frequency = -Math.Log(rank + 15);
+        double language = data.LanguageScore(candidate);
+        double modelLanguage = Math.Log(Math.Max(1e-6, layout.LanguageProbability(candidate, previous, previous2)));
+        double context = ContextScore(previous, previous2, russian);
+        return frequency - 1.5 * cost + 0.65 * language + 0.3 * modelLanguage + context;
     }
 
     private const string RussianLetters = "абвгдежзийклмнопрстуфхцчшщъыьэюя";
 
-    private bool HasUnrankedRival(string lower, LanguageData data, string chosen, double chosenCost)
+    private double? BestUnrankedRival(string lower, LanguageData data, string chosen, string? previous, string? previous2)
     {
+        double? best = null;
         foreach (string form in SingleEdits(lower, RussianLetters))
         {
             if (form == chosen || form.Length < 2 || data.Ranked(form) || !layout.IsKnownWord(form, true)) continue;
-            if (EditCost(lower, form, true) <= chosenCost + RivalCostSlack) return true;
+            double score = Score(data, form, data.Words.Count + 1, EditCost(lower, form, true), previous, previous2, true);
+            if (best is null || score > best) best = score;
         }
-        return false;
+        return best;
     }
-
-    private const double RivalCostSlack = 0.25;
 
     private static IEnumerable<string> SingleEdits(string word, string alphabet)
     {
