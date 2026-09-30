@@ -1,6 +1,6 @@
 # CLAUDE.md — KeySwitch
 
-KeySwitch is a Punto Switcher–style keyboard layout auto-switcher for Windows (RU/EN): tray app, C# .NET 8 WinForms.
+KeySwitch is a keyboard layout auto-switcher for Windows (RU/EN): tray app, C# .NET 8 WinForms.
 
 ## Layout
 - `src/KeySwitch.Core` — platform-independent decision engine (layout detection: word lists + trigram LM + Bloom filters of word forms; typo correction). All tests target this project.
