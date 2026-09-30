@@ -18,8 +18,9 @@ static class OwnerEval
         Console.WriteLine("|---|---|" + string.Concat(modes.Select(_ => "---|")));
         foreach (var line in File.ReadLines(path))
         {
-            if (line.StartsWith('#') || !line.Contains('\t')) continue;
-            var parts = line.Split('\t');
+            if (line.TrimStart().StartsWith('#')) continue;
+            var parts = line.Split(new[] { "→", "->", "\t" }, 2, StringSplitOptions.TrimEntries);
+            if (parts.Length != 2 || parts[0].Length == 0 || parts[1].Length == 0) continue;
             var cells = modes.Select(m =>
             {
                 var d = m.Decide(parts[0]);

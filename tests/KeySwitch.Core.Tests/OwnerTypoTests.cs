@@ -8,10 +8,15 @@ namespace KeySwitch.Core.Tests;
 [Collection(RussianSwitch.Name)]
 public sealed class OwnerTypoTests
 {
+    // Format: "опечатка → правильно" per line ("->" or a tab also work), # starts a comment.
     public static IEnumerable<object[]> Pairs() => File.ReadLines(Path.Combine(AppContext.BaseDirectory, "fixtures", "owner_typos.txt"))
-        .Where(line => !line.StartsWith('#') && line.Contains('\t'))
-        .Select(line => line.Split('\t'))
+        .Where(line => !line.TrimStart().StartsWith('#'))
+        .Select(line => line.Split(new[] { "→", "->", "\t" }, 2, StringSplitOptions.TrimEntries))
+        .Where(parts => parts.Length == 2 && parts[0].Length > 0 && parts[1].Length > 0)
         .Select(parts => new object[] { parts[0], parts[1] });
+
+    [Fact]
+    public void FixtureIsNotEmpty() => Assert.NotEmpty(Pairs());
 
     // Precision first: whatever a mode does with these words, it never produces a wrong word.
     [Theory]

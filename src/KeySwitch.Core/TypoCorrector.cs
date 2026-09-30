@@ -85,6 +85,18 @@ public sealed class TypoCorrector
         while (reader.ReadLine() is { } line) if (line.Length > 0) words.Add(Plain(line.Trim()));
         return words;
     });
+    // Colloquial / chat spellings (data/ru-colloquial.txt): never turned into "correct" words (ваще, щас, норм, спс).
+    private static readonly Lazy<HashSet<string>> RussianColloquial = new(() =>
+    {
+        var words = new HashSet<string>(StringComparer.Ordinal);
+        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("KeySwitch.ru-colloquial.txt");
+        if (stream is null) return words;
+        using var reader = new StreamReader(stream);
+        while (reader.ReadLine() is { } line)
+            if (line.Trim() is { Length: > 0 } word && !word.StartsWith('#')) words.Add(Plain(word.ToLowerInvariant()));
+        return words;
+    });
+    public static bool IsColloquial(string word) => RussianColloquial.Value.Contains(Plain(word.ToLowerInvariant()));
     private readonly DecisionEngine layout;
     public TypoCorrector(DecisionEngine? layout = null) => this.layout = layout ?? new DecisionEngine();
 
@@ -126,6 +138,7 @@ public sealed class TypoCorrector
         if (russian && word.Length < policy.RussianMinLength) return Keep("protected-shape");
         if (layout.IsKnownWord(word, russian)) return Keep("known-original");
         if (russian && RussianSeen.Value.Contains(Plain(word.ToLowerInvariant()))) return Keep("known-corpus");
+        if (russian && IsColloquial(word)) return Keep("colloquial");
         var data = russian ? Ru.Value : En.Value;
         string lower = word.ToLowerInvariant();
         int maxDistance = !russian && lower.Length >= 8 ? 2 : 1;
