@@ -1,0 +1,8 @@
+# Built by tools/build_ru_typo_list.py (limit 200000, min count 3, seen min 5, seen length >= 5)
+pack rus_news_2020_1M.tar.gz sha256 f522a9cccc1d63a5f2ccf11a47e144dd5abd1c840e8ccfb90c249630aaad4657
+  member rus_news_2020_1M/rus_news_2020_1M-words.txt sha256 45475dca2c08f6d247000cf44fb7719a99cf03c031977eb8a1b4ebb9cb6d639a
+pack rus_wikipedia_2021_1M.tar.gz sha256 f87d687024ccf3b586aa8b666f2928a369aae9064bfc3b22149087e79ec7ab5b
+  member rus_wikipedia_2021_1M/rus_wikipedia_2021_1M-words.txt sha256 6499543b85a886af061c6e2e6519650bd409e061e49e49c7aad44336990f0f7f
+filter ru-forms.bloom sha256 2ba38871d8d5f4526f6d5b07669acd26d1fac0462521c96c443c46442a644c24
+output ru-typo.txt forms 195940 sha256 8ee227047898d276159fb806c66eb8eadf6a81dad0ba491b87d7496249a67b2c
+output ru-typo-seen.txt forms 3374 sha256 89cae66d636c73701cc2084529065c71dcdfc96006480e049c14407e54afa4f3
