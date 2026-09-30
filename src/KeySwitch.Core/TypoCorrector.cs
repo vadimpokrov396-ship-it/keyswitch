@@ -69,6 +69,16 @@ public sealed class TypoCorrector
         Assembly.GetExecutingAssembly().GetManifestResourceNames().Contains("KeySwitch.ru-typo.txt") ? "KeySwitch.ru-typo.txt" : "KeySwitch.ru.txt",
         33, deleteIndex: false));
     private static string Plain(string word) => word.Replace('ё', 'е');
+    // Lowercase forms attested in edited corpora but absent from OpenCorpora (loanwords, slang, diminutives).
+    private static readonly Lazy<HashSet<string>> RussianSeen = new(() =>
+    {
+        var words = new HashSet<string>(StringComparer.Ordinal);
+        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("KeySwitch.ru-seen.txt");
+        if (stream is null) return words;
+        using var reader = new StreamReader(stream);
+        while (reader.ReadLine() is { } line) if (line.Length > 0) words.Add(Plain(line.Trim()));
+        return words;
+    });
     private readonly DecisionEngine layout;
     public TypoCorrector(DecisionEngine? layout = null) => this.layout = layout ?? new DecisionEngine();
 
@@ -87,6 +97,7 @@ public sealed class TypoCorrector
         // Four-letter Russian words have too many real neighbours (таку -> так, блан -> план) to change safely.
         if (russian && word.Length < 5) return Keep("protected-shape");
         if (layout.IsKnownWord(word, russian)) return Keep("known-original");
+        if (russian && RussianSeen.Value.Contains(Plain(word.ToLowerInvariant()))) return Keep("known-corpus");
         var data = russian ? Ru.Value : En.Value;
         string lower = word.ToLowerInvariant();
         // Two-edit corrections in Russian were mostly wrong on real typos (dev set: 13 right, 51 wrong or false).
@@ -190,7 +201,13 @@ public sealed class TypoCorrector
         if (Math.Abs(typed.Length - candidate.Length) == 1)
         {
             string longer = typed.Length > candidate.Length ? typed : candidate;
-            if (russian && longer[first] is 'ь' or 'ъ') return 0.3;
+            if (russian && longer[first] is 'ь' or 'ъ')
+            {
+                // A missing ь after ш in the 2nd person (будеш, собираешся) is a spelling habit, not a slip.
+                bool secondPerson = candidate.Length > typed.Length && first > 0 && candidate[first - 1] == 'ш' &&
+                    (first == candidate.Length - 1 || candidate.AsSpan(first + 1).SequenceEqual("ся"));
+                return secondPerson ? 0 : 0.3;
+            }
             return 0.75 + initial;
         }
         if (IsAdjacentSubstitution(typed, candidate, russian)) return 0.65 + initial;

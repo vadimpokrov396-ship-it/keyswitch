@@ -72,11 +72,24 @@ jobs:
             curl -fsSL --retry 3 -o "leipzig/$pack.tar.gz" "https://downloads.wortschatz-leipzig.de/corpora/$pack.tar.gz"; done
           python3 tools/build_ru_typo_list.py data/ru-typo.txt 200000 leipzig/*.tar.gz
           head -30 data/ru-typo.txt | tr '\n' ' '; echo
+          shuf -n 40 --random-source=data/ru-typo.txt data/ru-typo-seen.txt | tr '\n' ' '; echo
       - name: Evaluate (with RU word-form list)
         run: |
           dotnet build tools/KeySwitch.TypoEval -c Release -v q
           dotnet run --no-build --project tools/KeySwitch.TypoEval -c Release -- --pairs eval/dev.forms.report.json $(find eval/dev -name '*.json' | sort) > /dev/null
           dotnet run --no-build --project tools/KeySwitch.TypoEval -c Release -- --pairs eval/test.forms.report.json $(find eval/test -name '*.json' | sort) > /dev/null
+      - name: Dev examples (for tuning; test examples are not printed)
+        run: |
+          python3 - <<'PY'
+          import json
+          for name, r in json.load(open("eval/dev.forms.report.json")).items():
+              if name == "total":
+                  print("--- dev by edit distance:", r["ByDistance"])
+                  continue
+              for kind in ("WrongExamples", "FalseExamples", "MissExamples"):
+                  print(f"--- {name} {kind}")
+                  for example in r[kind][:25]: print("  ", example)
+          PY
       - name: Summary
         run: |
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
@@ -91,25 +104,13 @@ jobs:
                             f"| {r['ChangePrecision']:.2%} | {r['Recall']:.2%} | {r['FalseCorrectionRate']:.3%} |")
           PY
           cat "$GITHUB_STEP_SUMMARY"
-      - name: Dev examples (for tuning; test examples are not printed)
-        run: |
-          python3 - <<'PY'
-          import json
-          for name, r in json.load(open("eval/dev.forms.report.json")).items():
-              if name == "total":
-                  print("--- dev by edit distance:", r["ByDistance"])
-                  continue
-              for kind in ("WrongExamples", "FalseExamples", "MissExamples"):
-                  print(f"--- {name} {kind}")
-                  for example in r[kind][:25]: print("  ", example)
-          PY
       - name: Upload reports
         uses: actions/upload-artifact@v5
         with:
           name: typo-eval
           path: |
             eval/*.report.json
-            data/ru-typo.txt
+            data/ru-typo*.txt
 
   windows:
     name: Build, package, selftest (Windows)

@@ -6,6 +6,10 @@ This list sums form counts from the `*-words.txt` members of Leipzig Corpora Col
 the same packs as tools/prepare_data.py) and keeps only lowercase Cyrillic forms that the bundled
 OpenCorpora Bloom filter (src/KeySwitch.Core/ru-forms.bloom) knows, which drops typos and junk.
 
+It also writes OUTPUT with ".txt" replaced by "-seen.txt": lowercase forms that the Bloom filter does NOT
+know but that occur at least SEEN_MIN times in the edited corpora (loanwords, slang, diminutives such as
+"паблике", "ливинг", "моделькой"). KeySwitch never "corrects" those.
+
 Usage: build_ru_typo_list.py OUTPUT LIMIT PACK.tar.gz [PACK.tar.gz ...]
 """
 import collections, pathlib, re, struct, sys, tarfile
@@ -13,6 +17,7 @@ import collections, pathlib, re, struct, sys, tarfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MASK = (1 << 64) - 1
 WORD = re.compile(r'^[а-яё]{2,32}$')
+SEEN_MIN = 5
 
 
 class Bloom:
@@ -52,9 +57,16 @@ def main(output, limit, packs):
                     counts[word.replace('ё', 'е')] += int(parts[-1])
         print(f'{pack}: {len(counts)} distinct lowercase forms so far', flush=True)
     bloom = Bloom(ROOT / 'src/KeySwitch.Core/ru-forms.bloom')
-    kept = [w for w, n in counts.most_common() if n >= 3 and w in bloom][:limit]
-    pathlib.Path(output).write_text('\n'.join(kept) + '\n', encoding='utf-8')
-    print(f'{output}: {len(kept)} forms, {pathlib.Path(output).stat().st_size} bytes', flush=True)
+    kept, seen = [], []
+    for word, count in counts.most_common():
+        if word in bloom:
+            if count >= 3 and len(kept) < limit:
+                kept.append(word)
+        elif count >= SEEN_MIN and len(word) >= 5:
+            seen.append(word)
+    for path, words in ((pathlib.Path(output), kept), (pathlib.Path(output.replace('.txt', '-seen.txt')), sorted(seen))):
+        path.write_text('\n'.join(words) + '\n', encoding='utf-8')
+        print(f'{path}: {len(words)} forms, {path.stat().st_size} bytes', flush=True)
 
 
 if __name__ == '__main__':
