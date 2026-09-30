@@ -23,11 +23,11 @@ public sealed class ManualFixTests
         TypoCorrector.RussianEnabled = false;
         try
         {
-            var fix = Boundary.Manual("превет");
-            Assert.Equal("привет", fix.Replacement);
+            var fix = Boundary.Manual("правительсво");
+            Assert.Equal("правительство", fix.Replacement);
             Assert.False(fix.LayoutChange);
             Assert.Equal("typo-manual", fix.Reason);
-            Assert.Equal("Привет", Boundary.Manual("Превет").Replacement);
+            Assert.Equal("Правительство", Boundary.Manual("Правительсво").Replacement);
         }
         finally { TypoCorrector.RussianEnabled = saved; }
     }
