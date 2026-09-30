@@ -155,7 +155,7 @@ public sealed class TypoCorrector
 
     private const int RussianRankCap = 50000;
     // Minimum lead of the best Russian candidate over every rival (tuned on the dev set, see TypoEval --pairs).
-    internal const double RussianMargin = 2.2;
+    internal const double RussianMargin = 4.0;
     private const string RussianLetters = "абвгдежзийклмнопрстуфхцчшщъыьэюя";
 
     private double? BestUnrankedRival(string lower, LanguageData data, string chosen, string? previous, string? previous2)
