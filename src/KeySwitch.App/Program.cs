@@ -13,7 +13,8 @@ internal static class Program
         {
             Diagnostics.Enabled = true;
             Diagnostics.Startup();
-            Application.Run(new SelfTestForm());
+            // --quiet: no result dialog, exit code 0 = pass, 1 = fail (for CI / scripted checks).
+            Application.Run(new SelfTestForm(quiet: args.Contains("--quiet", StringComparer.OrdinalIgnoreCase)));
             return;
         }
         using var mutex = new Mutex(true, "Local\\KeySwitch.SingleInstance", out bool first);
@@ -309,9 +310,12 @@ internal sealed class TrayApplication : ApplicationContext
 internal sealed class SelfTestForm : Form
 {
     private readonly TextBox editor = new() { Dock = DockStyle.Fill };
+    private readonly bool quiet;
     private KeyboardController? keyboard;
-    internal SelfTestForm()
+    internal SelfTestForm(bool quiet)
     {
+        this.quiet = quiet;
+        Environment.ExitCode = 1;
         Text = "KeySwitch selftest";
         Size = new Size(240, 80);
         ShowInTaskbar = false;
@@ -332,45 +336,47 @@ internal sealed class SelfTestForm : Form
             Activate(); editor.Focus();
             await Task.Delay(150);
             if (!editor.Focused) throw new InvalidOperationException("Не удалось сфокусировать тестовое поле");
-            foreach (char ch in "ghbdtn ")
-            {
-                if (!FocusGuard.TryGetSnapshot(out var focused) || focused.Focus != editor.Handle || focused.Window != Handle)
-                    throw new InvalidOperationException("Фокус покинул тестовое поле");
-                ushort vk = ch == ' ' ? (ushort)Keys.Space : (ushort)((int)Keys.A + (ch - 'a'));
-                if (!Native.Send(Native.Key(vk, tag: Native.SelfTestTag), Native.Key(vk, true, Native.SelfTestTag)))
-                    throw new InvalidOperationException("SendInput не доставил тестовую клавишу");
-                await Task.Delay(45);
-            }
+            await TypeKeysAsync("ghbdtn ");
             await Task.Delay(300);
-            bool layoutPass = editor.Text == "привет ";
+            string layoutText = editor.Text;
+            bool layoutPass = layoutText == "привет ";
             editor.Clear();
             await Task.Delay(100);
-            IntPtr russian = Native.LoadKeyboardLayout("00000419", 0);
-            Native.ActivateKeyboardLayout(russian, 0);
+            // The first stage switched the field to Russian; typo correction is checked in English.
+            // Words shorter than 4 letters are never typo-corrected, so the typo must be longer.
+            Native.ActivateKeyboardLayout(english, 0);
             await Task.Delay(100);
-            foreach (char ch in "teh ")
-            {
-                if (!FocusGuard.TryGetSnapshot(out var focused) || focused.Focus != editor.Handle || focused.Window != Handle)
-                    throw new InvalidOperationException("Фокус покинул тестовое поле");
-                ushort vk = ch switch
-                {
-                    'п' => (ushort)Keys.G, 'р' => (ushort)Keys.H, 'е' => (ushort)Keys.T,
-                    'в' => (ushort)Keys.D, 'т' => (ushort)Keys.N, ' ' => (ushort)Keys.Space,
-                    _ => throw new InvalidOperationException("Недопустимый символ самопроверки")
-                };
-                if (!Native.Send(Native.Key(vk, tag: Native.SelfTestTag), Native.Key(vk, true, Native.SelfTestTag)))
-                    throw new InvalidOperationException("SendInput не доставил тестовую клавишу");
-                await Task.Delay(45);
-            }
+            await TypeKeysAsync("becuase ");
             await Task.Delay(300);
-            bool typoPass = editor.Text == "the ";
+            bool typoPass = editor.Text == "because ";
             pass = layoutPass && typoPass;
-            status = $"layout_match={layoutPass} typo_match={typoPass} actual_length={editor.Text.Length}";
+            // The test field only ever holds the synthetic selftest text, so logging it is safe.
+            status = $"layout_match={layoutPass} typo_match={typoPass} layout_actual=\"{layoutText}\" typo_actual=\"{editor.Text}\"";
         }
         catch (Exception error) { status = $"exception={error.GetType().Name} hresult=0x{error.HResult:X} message={error.Message}"; }
         finally { keyboard?.Dispose(); Diagnostics.Write($"selftest pass={pass} {status}"); Diagnostics.FlushNow(); }
-        MessageBox.Show(pass ? "Самопроверка пройдена: ghbdtn → привет; teh → the" : "Самопроверка не пройдена. Откройте %AppData%\\KeySwitch\\diag.log и передайте лог разработчику.",
+        Environment.ExitCode = pass ? 0 : 1;
+        if (!quiet) MessageBox.Show(pass ? "Самопроверка пройдена: ghbdtn → привет; becuase → because" : "Самопроверка не пройдена. Откройте %AppData%\\KeySwitch\\diag.log и передайте лог разработчику.",
             "KeySwitch — самопроверка", MessageBoxButtons.OK, pass ? MessageBoxIcon.Information : MessageBoxIcon.Error);
         Close();
+    }
+
+    // Types physical keys by their US positions (a-z, space); the active layout decides the characters.
+    private async Task TypeKeysAsync(string keys)
+    {
+        foreach (char ch in keys)
+        {
+            if (!FocusGuard.TryGetSnapshot(out var focused) || focused.Focus != editor.Handle || focused.Window != Handle)
+                throw new InvalidOperationException("Фокус покинул тестовое поле");
+            ushort vk = ch switch
+            {
+                ' ' => (ushort)Keys.Space,
+                >= 'a' and <= 'z' => (ushort)((int)Keys.A + (ch - 'a')),
+                _ => throw new InvalidOperationException("Недопустимый символ самопроверки")
+            };
+            if (!Native.Send(Native.Key(vk, tag: Native.SelfTestTag), Native.Key(vk, true, Native.SelfTestTag)))
+                throw new InvalidOperationException("SendInput не доставил тестовую клавишу");
+            await Task.Delay(45);
+        }
     }
 }

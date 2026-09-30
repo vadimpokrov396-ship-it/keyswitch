@@ -11,7 +11,11 @@ internal sealed class FocusGuard
     private readonly Settings settings;
     private readonly record struct ProbeResult(bool Password, string? Identity);
     private static readonly object probeLock = new();
-    private static readonly List<(FocusTarget Target, Task<ProbeResult> Task)> activeProbes = new();
+    // A probe running longer than StaleProbeMs no longer blocks new probes for other fields; at most
+    // MaxOutstandingProbes may be pending in total, since each hung provider holds a thread-pool thread.
+    private const long StaleProbeMs = 3000;
+    private const int MaxFreshProbes = 2, MaxOutstandingProbes = 6;
+    private static readonly List<(FocusTarget Target, Task<ProbeResult> Task, long Started)> activeProbes = new();
     private static readonly Dictionary<(IntPtr Window, IntPtr Focus), long> passwordFocuses = new();
     internal FocusGuard(Settings settings) => this.settings = settings;
 
@@ -69,16 +73,19 @@ internal sealed class FocusGuard
         lock (probeLock)
         {
             knownPassword = passwordFocuses.TryGetValue(key, out long until) && until > Environment.TickCount64;
+            long now = Environment.TickCount64;
             activeProbes.RemoveAll(probe => probe.Task.IsCompleted);
+            // Reuse a pending probe of the same field even when it hangs: a new one would hang too.
             task = activeProbes.FirstOrDefault(probe => probe.Target.Window == target.Window &&
                 probe.Target.Focus == target.Focus).Task;
-            if (task is null && activeProbes.Count < 2)
+            int fresh = activeProbes.Count(probe => now - probe.Started < StaleProbeMs);
+            if (task is null && fresh < MaxFreshProbes && activeProbes.Count < MaxOutstandingProbes)
             {
                 task = Task.Run(() => ProbeFocusedElement(target));
-                activeProbes.Add((target, task));
+                activeProbes.Add((target, task, now));
             }
         }
-        // Both slots can be occupied by hung providers. With no probe for this field,
+        // All slots can be occupied by hung providers. With no probe for this field,
         // do not infer that it is safe, even though an individual timed-out probe fails open.
         if (task is null) { Diagnostics.Write("uia outcome=capacity-exhausted"); return null; }
         ProbeResult result = default;

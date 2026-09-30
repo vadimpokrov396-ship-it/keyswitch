@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: '1'
+
+jobs:
+  test-linux:
+    name: Core tests (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - name: Test
+        run: dotnet test tests/KeySwitch.Core.Tests -c Release --logger 'trx;LogFileName=core-linux.trx' --results-directory artifacts
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: test-results-linux
+          path: artifacts/*.trx
+          if-no-files-found: ignore
+
+  windows:
+    name: Build, package, selftest (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Check tag matches project version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $version = ([xml](Get-Content src/KeySwitch.App/KeySwitch.App.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+          $tag = '${{ github.ref_name }}'.TrimStart('v')
+          if ($tag -ne $version) { Write-Error "Tag v$tag does not match <Version>$version</Version> in KeySwitch.App.csproj"; exit 1 }
+
+      # Same script as local builds: tests, both win-x64 publishes, zips, checksums, PE/ZIP checks.
+      - name: Build (tools/build.sh)
+        shell: bash
+        env:
+          DOTNET_BIN: dotnet
+          PYTHON: python
+        run: ./tools/build.sh
+
+      # Real Windows input path: WH_KEYBOARD_LL hook + SendInput + layout switch + typo correction.
+      - name: Selftest (headless)
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:APPDATA 'KeySwitch\diag.log'
+          $failed = @()
+          foreach ($exe in 'dist\KeySwitch.exe', 'dist\small\KeySwitch.exe') {
+            Write-Host "::group::selftest $exe"
+            Remove-Item $log -ErrorAction SilentlyContinue
+            $process = Start-Process -FilePath $exe -ArgumentList '--selftest', '--quiet' -PassThru
+            $null = $process.Handle  # keep the handle so ExitCode is available after exit
+            if (-not $process.WaitForExit(120000)) {
+              $process.Kill()
+              $failed += "$exe (timeout)"
+            } elseif ($process.ExitCode -ne 0) {
+              $failed += "$exe (exit $($process.ExitCode))"
+            }
+            if (Test-Path $log) { Get-Content $log } else { Write-Host 'diag.log not written' }
+            Write-Host '::endgroup::'
+          }
+          if ($failed) { Write-Error ("Selftest failed: " + ($failed -join ', ')); exit 1 }
+          Write-Host 'Selftest passed for both builds'
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v5
+        with:
+          name: packages
+          path: |
+            dist/KeySwitch-win-x64.zip
+            dist/KeySwitch-small.zip
+            dist/SHA256SUMS-all
+          if-no-files-found: error
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: reports-windows
+          path: |
+            artifacts/
+          if-no-files-found: ignore
+
+  release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test-linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: packages
+          path: release
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create '${{ github.ref_name }}' release/KeySwitch-win-x64.zip release/KeySwitch-small.zip release/SHA256SUMS-all \
+            --repo '${{ github.repository }}' --title 'KeySwitch ${{ github.ref_name }}' --generate-notes
