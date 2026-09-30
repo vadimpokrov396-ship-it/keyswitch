@@ -28,4 +28,29 @@ public sealed class OwnerTypoTests
         }
         finally { TypoCorrector.RussianEnabled = saved; }
     }
+
+    // What the shipped modes fix today (CI prints the full owner_typos table). The others stay unchanged: стаей is a
+    // real word, поаправь has the rival подправь, and кчати, транскридации, поучайтся, териетический need two edits,
+    // which lowered precision on the dev set in both modes.
+    [Theory]
+    [InlineData("засвтра", "завтра")]
+    [InlineData("мыжно", "можно")]
+    public void AutoCorrectionFixes(string typo, string intended)
+    {
+        bool saved = TypoCorrector.RussianEnabled;
+        TypoCorrector.RussianEnabled = true;
+        try { Assert.Equal(intended, new TypoCorrector(new DecisionEngine()).Evaluate(typo).Corrected); }
+        finally { TypoCorrector.RussianEnabled = saved; }
+    }
+
+    [Theory]
+    [InlineData("засвтра", "завтра")]
+    [InlineData("мыжно", "можно")]
+    [InlineData("пенктуации", "пунктуации")]
+    public void PauseFixes(string typo, string intended)
+    {
+        var fix = new BoundaryEngine(new DecisionEngine()).Manual(typo);
+        Assert.Equal(intended, fix.Replacement);
+        Assert.False(fix.LayoutChange);
+    }
 }

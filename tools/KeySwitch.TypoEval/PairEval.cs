@@ -26,9 +26,9 @@ static class PairEval
             new("auto rank<=100k", autoSweep with { RussianRankCap = 100000 }, false),
             new("auto rank<=200k", autoSweep with { RussianRankCap = 200000 }, false),
             new("auto rank<=50k +2 edits for 8+ letters", autoSweep with { RussianDistance2MinLength = 8 }, false),
-            new("manual rank<=50k", manualSweep, true),
+            new("manual rank<=50k", manualSweep with { RussianRankCap = 50000 }, true),
             new("manual rank<=200k", manualSweep with { RussianRankCap = 200000 }, true),
-            new("manual rank<=50k +2 edits for 8+ letters", manualSweep with { RussianDistance2MinLength = 8 }, true),
+            new("manual rank<=200k +2 edits for 8+ letters", manualSweep with { RussianRankCap = 200000, RussianDistance2MinLength = 8 }, true),
         };
         foreach (var input in inputs)
         {
