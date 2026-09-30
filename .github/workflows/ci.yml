@@ -107,6 +107,7 @@ jobs:
           print("|---|---|---:|---:|---:|---:|---:|---:|---:|")
           for part in parts:
               for name, r in json.load(open(f"eval/{part}.report.json")).items():
+                  if name == "variants": continue
                   print(f"| {part} | {name} | {r['Typos']} | {r['Corrected']} | {r['WrongCorrections']} | {r['FalseCorrections']} "
                         f"| {r['ChangePrecision']:.2%} | {r['Recall']:.2%} | {r['FalseCorrectionRate']:.3%} |")
           print("\n### Auto-correction confidence threshold sweep (dev)\n")
