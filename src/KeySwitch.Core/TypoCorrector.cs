@@ -85,7 +85,7 @@ public sealed class TypoCorrector
             if (data.Deletes.TryGetValue(deleted, out var entries))
                 foreach (var entry in entries) candidates.Add(entry);
         // The exact word is in neither ranked lexicon nor the Bloom filter here.
-        var scored = new List<(Entry Entry, double Score)>();
+        var scored = new List<(Entry Entry, double Score, double Cost)>();
         foreach (var entry in candidates)
         {
             if (Math.Abs(entry.Word.Length - lower.Length) > maxDistance) continue;
@@ -93,15 +93,12 @@ public sealed class TypoCorrector
             if (distance == 0 || distance > maxDistance) continue;
             // A second edit requires a common destination and a plausible word shape.
             if (distance == 2 && (entry.Rank > 10000 || lower.Length < 8)) continue;
-            double cost = distance == 2 ? 3.2 : 1.0;
-            if (distance == 1 && IsAdjacentSubstitution(lower, entry.Word, russian)) cost = 0.65;
-            if (distance == 1 && IsTransposition(lower, entry.Word)) cost = 0.55;
-            if (distance == 1 && Math.Abs(lower.Length - entry.Word.Length) == 1) cost = 0.75;
+            double cost = distance == 2 ? 3.2 : EditCost(lower, entry.Word, russian);
             double frequency = -Math.Log(entry.Rank + 15);
             double language = data.LanguageScore(entry.Word);
             double modelLanguage = Math.Log(Math.Max(1e-6, layout.LanguageProbability(entry.Word, previous, previous2)));
             double context = ContextScore(previous, previous2, russian);
-            scored.Add((entry, frequency - 1.5 * cost + 0.65 * language + 0.3 * modelLanguage + context));
+            scored.Add((entry, frequency - 1.5 * cost + 0.65 * language + 0.3 * modelLanguage + context, cost));
         }
         if (scored.Count == 0) return Keep("no-candidate");
         scored.Sort((a, b) => b.Score.CompareTo(a.Score));
@@ -109,7 +106,59 @@ public sealed class TypoCorrector
         double margin = scored.Count == 1 ? 4 : best.Score - scored[1].Score;
         // A strict margin protects unknown names and foreign words absent from the Bloom lexicon.
         if (margin < 2.2 || best.Entry.Rank > 12000) return Keep("ambiguous-candidate");
+        // The ranked list holds only frequent words. A real form from the full lexicon (OpenCorpora for RU) that is
+        // one edit away and at least as plausible an edit is an unranked rival: the intended word is unclear.
+        if (russian && HasUnrankedRival(lower, data, best.Entry.Word, best.Cost)) return Keep("ambiguous-form");
         return new(true, word, best.Entry.Word, margin, "typo-autocorrect");
+    }
+
+    private const string RussianLetters = "абвгдежзийклмнопрстуфхцчшщъыьэюя";
+
+    private bool HasUnrankedRival(string lower, LanguageData data, string chosen, double chosenCost)
+    {
+        foreach (string form in SingleEdits(lower, RussianLetters))
+        {
+            if (form == chosen || form.Length < 2 || data.Words.ContainsKey(form) || !layout.IsKnownWord(form, true)) continue;
+            if (EditCost(lower, form, true) <= chosenCost + RivalCostSlack) return true;
+        }
+        return false;
+    }
+
+    private const double RivalCostSlack = 0.25;
+
+    private static IEnumerable<string> SingleEdits(string word, string alphabet)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (int i = 0; i < word.Length; i++)
+        {
+            string deleted = word.Remove(i, 1);
+            if (seen.Add(deleted)) yield return deleted;
+            if (i + 1 < word.Length)
+            {
+                string swapped = word[..i] + word[i + 1] + word[i] + word[(i + 2)..];
+                if (seen.Add(swapped)) yield return swapped;
+            }
+            foreach (char c in alphabet)
+            {
+                if (c == word[i]) continue;
+                string replaced = word[..i] + c + word[(i + 1)..];
+                if (seen.Add(replaced)) yield return replaced;
+            }
+        }
+        for (int i = 0; i <= word.Length; i++)
+            foreach (char c in alphabet)
+            {
+                string inserted = word.Insert(i, c.ToString());
+                if (seen.Add(inserted)) yield return inserted;
+            }
+    }
+
+    private static double EditCost(string typed, string candidate, bool russian)
+    {
+        if (IsTransposition(typed, candidate)) return 0.55;
+        if (Math.Abs(typed.Length - candidate.Length) == 1) return 0.75;
+        if (IsAdjacentSubstitution(typed, candidate, russian)) return 0.65;
+        return 1.0;
     }
 
     private static double ContextScore(string? previous, string? previous2, bool russian)

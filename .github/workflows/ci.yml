@@ -76,6 +76,16 @@ jobs:
                         f"| {r['ChangePrecision']:.2%} | {r['Recall']:.2%} | {r['FalseCorrectionRate']:.3%} |")
           PY
           cat "$GITHUB_STEP_SUMMARY"
+      - name: Dev examples (for tuning; test examples are not printed)
+        run: |
+          python3 - <<'PY'
+          import json
+          for name, r in json.load(open("eval/dev.report.json")).items():
+              if name == "total": continue
+              for kind in ("WrongExamples", "FalseExamples", "MissExamples"):
+                  print(f"--- {name} {kind}")
+                  for example in r[kind][:25]: print("  ", example)
+          PY
       - name: Upload reports
         uses: actions/upload-artifact@v5
         with:
