@@ -84,6 +84,8 @@ public sealed class TypoCorrector
         bool english = word.All(c => c is >= 'a' and <= 'z');
         if (!russian && !english) return Keep("protected-script");
         if (russian && !RussianEnabled) return Keep("ru-typo-disabled");
+        // Four-letter Russian words have too many real neighbours (таку -> так, блан -> план) to change safely.
+        if (russian && word.Length < 5) return Keep("protected-shape");
         if (layout.IsKnownWord(word, russian)) return Keep("known-original");
         var data = russian ? Ru.Value : En.Value;
         string lower = word.ToLowerInvariant();
@@ -180,10 +182,19 @@ public sealed class TypoCorrector
 
     private static double EditCost(string typed, string candidate, bool russian)
     {
-        if (IsTransposition(typed, candidate)) return 0.55;
-        if (Math.Abs(typed.Length - candidate.Length) == 1) return 0.75;
-        if (IsAdjacentSubstitution(typed, candidate, russian)) return 0.65;
-        return 1.0;
+        int first = 0;
+        while (first < typed.Length && first < candidate.Length && typed[first] == candidate[first]) first++;
+        // Russian writers rarely mistype the first letter, but often drop or add ь/ъ (будеш, собираешся, хочеться).
+        double initial = russian && first == 0 ? 0.5 : 0;
+        if (IsTransposition(typed, candidate)) return 0.55 + initial;
+        if (Math.Abs(typed.Length - candidate.Length) == 1)
+        {
+            string longer = typed.Length > candidate.Length ? typed : candidate;
+            if (russian && longer[first] is 'ь' or 'ъ') return 0.3;
+            return 0.75 + initial;
+        }
+        if (IsAdjacentSubstitution(typed, candidate, russian)) return 0.65 + initial;
+        return 1.0 + initial;
     }
 
     private static double ContextScore(string? previous, string? previous2, bool russian)
