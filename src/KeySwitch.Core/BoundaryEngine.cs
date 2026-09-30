@@ -1,5 +1,7 @@
 namespace KeySwitch.Core;
 
+public sealed record ManualFix(string Replacement, bool LayoutChange, string Reason);
+
 public sealed record BoundaryResult(string Original, string Replacement, bool Changed, int PreviousCharacters, string Reason, double Confidence);
 
 /// <summary>Shared live-input and corpus replay boundary policy. State is memory-only.</summary>
@@ -15,6 +17,19 @@ public sealed class BoundaryEngine(DecisionEngine engine, bool legacy = false,
     private readonly LegacyDecisionEngine oldEngine = new();
     public static bool IsTokenCharacter(char c) => char.IsLetterOrDigit(c) || "`,.;'[]~{}:\"<>@/_-\\#?&=%+".Contains(c);
     public void Reset() { context.Clear(); previousUnconvertedShort = null; }
+
+    /// <summary>What Pause / double Shift does to a word: text typed in the wrong layout that forms a known word
+    /// is converted; otherwise a confident spelling fix (typo-manual) is applied; otherwise the layout conversion
+    /// as before. Spelling fixes keep the script, so no layout switch follows.</summary>
+    public ManualFix Manual(string token, IEnumerable<string>? exceptions = null)
+    {
+        string converted = LayoutMap.Convert(token);
+        bool convertedRussian = converted.Any(c => c is >= 'а' and <= 'я' or >= 'А' and <= 'Я' or 'ё' or 'Ё');
+        if (converted.All(char.IsLetter) && engine.IsKnownWord(converted, convertedRussian)) return new(converted, true, "manual-layout-known");
+        var suggestion = typo.Suggest(token, null, null, exceptions);
+        if (suggestion.ShouldCorrect) return new(suggestion.Corrected, false, suggestion.Reason);
+        return new(converted, true, "manual-layout");
+    }
     public BoundaryResult Complete(string token, string separator, IEnumerable<string>? exceptions = null)
     {
         if (token.Length == 0)

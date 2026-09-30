@@ -3,6 +3,8 @@ using Xunit;
 
 namespace KeySwitch.Core.Tests;
 
+// TypoCorrector.RussianEnabled is static: tests that switch it must not run in parallel.
+[Collection(RussianSwitch.Name)]
 public sealed class TypoTests
 {
     public TypoTests() { TypoCorrector.RussianEnabled = true; }
@@ -11,8 +13,9 @@ public sealed class TypoTests
     public void CorrectsRussianExampleAfterLayoutDecision()
     {
         var boundary = new BoundaryEngine(new DecisionEngine());
-        var result = boundary.Complete("превет", " ");
-        Assert.Equal("привет", result.Replacement);
+        // An unambiguous typo: one candidate, no rival form. Borderline ones (превет) are left to Pause.
+        var result = boundary.Complete("правительсво", " ");
+        Assert.Equal("правительство", result.Replacement);
         Assert.Equal("typo-autocorrect", result.Reason);
     }
 
@@ -49,10 +52,10 @@ public sealed class TypoTests
     public void ToggleAndExceptionAreIndependent()
     {
         var boundary = new BoundaryEngine(new DecisionEngine()) { LayoutEnabled = false };
-        Assert.Equal("привет", boundary.Complete("превет", " ").Replacement);
-        Assert.Equal("превет", boundary.Complete("превет", " ", ["превет"]).Replacement);
+        Assert.Equal("правительство", boundary.Complete("правительсво", " ").Replacement);
+        Assert.Equal("правительсво", boundary.Complete("правительсво", " ", ["правительсво"]).Replacement);
         boundary.TypoEnabled = false;
-        Assert.Equal("превет", boundary.Complete("превет", " ").Replacement);
+        Assert.Equal("правительсво", boundary.Complete("правительсво", " ").Replacement);
         boundary.LayoutEnabled = true;
         Assert.Equal("привет", boundary.Complete("ghbdtn", " ").Replacement);
     }

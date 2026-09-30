@@ -268,15 +268,17 @@ internal sealed class KeyboardController : IDisposable
         if (identity is null || !SameIdentity(sourceIdentity, identity) || !guard.IsSame(target) || InputRevision != revision) return;
         string original = trailingSpace ? lastWord! : word.ToString();
         if (original.Length is 0 or > 80) return;
-        string converted = LayoutMap.Convert(original);
-        Diagnostics.Write($"token length={original.Length} decision=manual confidence=1 changed={converted != original}");
+        // Wrong-layout text becomes the other layout; a misspelled word gets its spelling fix instead.
+        var fix = boundary.Manual(original);
+        string converted = fix.Replacement;
+        Diagnostics.Write($"token length={original.Length} decision={fix.Reason} confidence=1 changed={converted != original}");
         if (converted == original) return;
         await Task.Delay(12);
         if (!guard.IsSame(target) || InputRevision != revision) return;
         var sent = Native.Replace(original.Length + (trailingSpace ? 1 : 0), converted + (trailingSpace ? " " : ""));
         if (!sent.Complete) { Reset(); WarnUipi(target, sent); return; }
-        SwitchLayout(target, converted);
-        lastConversion = new Conversion(original, converted, trailingSpace ? " " : "", target, identity, false, true);
+        if (fix.LayoutChange) SwitchLayout(target, converted);
+        lastConversion = new Conversion(original, converted, trailingSpace ? " " : "", target, identity, false, fix.LayoutChange);
         lastWord = null; lastWordProbe = null;
         boundary.Reset();
         if (trailingSpace) ResetWord();

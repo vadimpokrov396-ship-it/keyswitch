@@ -62,5 +62,24 @@ The bundled plain word files are filtered extracts, not frequency/count files. E
 
 The requested Hermit Dave FrequencyWords source is not being bundled. Its repository README explicitly distinguishes MIT-licensed code from CC BY-SA 4.0 content, and filtering/deriving model data from that corpus would retain the ShareAlike obligation. The English and Russian sources above have their own compatible attribution licences and avoid that ambiguity.
 
+## Russian typo word lists (`data/ru-typo.txt`, `data/ru-typo-seen.txt`)
+
+Used only by Russian typo correction (candidates and protected words); the layout model is unchanged.
+
+- Source: the `*-words.txt` members (word-form frequency counts) of two Leipzig Corpora Collection packs listed above, **Russian news 2020** and **Russian Wikipedia 2021** (`rus_news_2020_1M.tar.gz`, `rus_wikipedia_2021_1M.tar.gz`) from https://downloads.wortschatz-leipzig.de/corpora/. The downloadable text corpora are **CC BY** per the Leipzig [terms of usage](https://wod.wortschatz-leipzig.de/en/usage). Attribution: Leipzig Corpora Collection, University of Leipzig — Russian news corpus 2020 and Russian Wikipedia corpus 2021.
+- Pinned downloads (`tools/leipzig-packs.sha256`, verified by `tools/fetch_leipzig.sh`): `rus_news_2020_1M.tar.gz` SHA-256 `f522a9cccc1d63a5f2ccf11a47e144dd5abd1c840e8ccfb90c249630aaad4657` (member `rus_news_2020_1M-words.txt` `45475dca2c08f6d247000cf44fb7719a99cf03c031977eb8a1b4ebb9cb6d639a`); `rus_wikipedia_2021_1M.tar.gz` SHA-256 `f87d687024ccf3b586aa8b666f2928a369aae9064bfc3b22149087e79ec7ab5b` (member `rus_wikipedia_2021_1M-words.txt` `6499543b85a886af061c6e2e6519650bd409e061e49e49c7aad44336990f0f7f`). The hashes were recorded from the first build (2026-09-30, GitHub Actions run 36721487431); later builds must match them.
+- Transformation (`tools/build_ru_typo_list.py`): only lowercase Cyrillic tokens of 2–32 letters, `ё` written as `е`, counts of both packs summed. `ru-typo.txt` keeps the 195,940 forms with count ≥ 3 that the bundled OpenCorpora filter (`ru-forms.bloom`, SHA-256 `2ba38871…c24`) recognises, in frequency order, without counts. `ru-typo-seen.txt` keeps the 3,374 forms of 5+ letters with count ≥ 5 that the filter does not recognise (loanwords, neologisms, terms), sorted. No sentences are included.
+- Bundled file SHA-256: `ru-typo.txt` `8ee227047898d276159fb806c66eb8eadf6a81dad0ba491b87d7496249a67b2c`, `ru-typo-seen.txt` `89cae66d636c73701cc2084529065c71dcdfc96006480e049c14407e54afa4f3` (see also `data/ru-typo.manifest.txt`).
+- Licence: the lists are derived from CC BY Leipzig data. Because the selection uses the OpenCorpora-derived filter (CC BY-SA 3.0), they are conservatively distributed under **CC BY-SA 3.0** as well, like `ru-forms.bloom`, with the attributions above.
+- Rebuild: GitHub Actions → CI → Run workflow → task `build-ru-dictionary`.
+
+## Colloquial Russian (`data/ru-colloquial.txt`)
+
+About 70 colloquial / chat spellings (ваще, щас, чё, норм, спс, ...) that typo correction must never "fix", curated for KeySwitch in 2026 and licensed under the project MIT licence. Not derived from any corpus.
+
+## Typo evaluation data (not distributed)
+
+CI measures Russian typo correction on [`ai-forever/spellcheck_benchmark`](https://huggingface.co/datasets/ai-forever/spellcheck_benchmark) (MIT): the train splits of RUSpellRU and MultidomainGold are the dev set used for all tuning; the test splits of RUSpellRU, MultidomainGold and GitHubTypoCorpusRu are scored only by the manual `typo-final-test` run. The data is downloaded on the CI runner and is neither committed nor bundled.
+
 ## Project supplement (`data/ru-common.txt`)
 86 common Russian inflected forms, curated for KeySwitch in 2026 and licensed under the project MIT licence. This separate list fills frequent gaps in the lemma-heavy upstream RU corpus; it is not represented as upstream corpus data.
