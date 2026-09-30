@@ -120,9 +120,15 @@ jobs:
         with:
           name: packages
           path: release
-      - name: Create release
+      # A release published from the GitHub UI creates the tag first; then only attach the files.
+      - name: Create release or attach files
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create '${{ github.ref_name }}' release/KeySwitch-win-x64.zip release/KeySwitch-small.zip release/SHA256SUMS-all \
-            --repo '${{ github.repository }}' --title 'KeySwitch ${{ github.ref_name }}' --generate-notes
+          files='release/KeySwitch-win-x64.zip release/KeySwitch-small.zip release/SHA256SUMS-all'
+          if gh release view '${{ github.ref_name }}' --repo '${{ github.repository }}' > /dev/null 2>&1; then
+            gh release upload '${{ github.ref_name }}' $files --clobber --repo '${{ github.repository }}'
+          else
+            gh release create '${{ github.ref_name }}' $files \
+              --repo '${{ github.repository }}' --title 'KeySwitch ${{ github.ref_name }}' --generate-notes
+          fi
