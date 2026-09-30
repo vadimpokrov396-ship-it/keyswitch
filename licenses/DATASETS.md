@@ -73,6 +73,10 @@ Used only by Russian typo correction (candidates and protected words); the layou
 - Licence: the lists are derived from CC BY Leipzig data. Because the selection uses the OpenCorpora-derived filter (CC BY-SA 3.0), they are conservatively distributed under **CC BY-SA 3.0** as well, like `ru-forms.bloom`, with the attributions above.
 - Rebuild: GitHub Actions → CI → Run workflow → task `build-ru-dictionary`.
 
+## Colloquial Russian (`data/ru-colloquial.txt`)
+
+About 70 colloquial / chat spellings (ваще, щас, чё, норм, спс, ...) that typo correction must never "fix", curated for KeySwitch in 2026 and licensed under the project MIT licence. Not derived from any corpus.
+
 ## Typo evaluation data (not distributed)
 
 CI measures Russian typo correction on [`ai-forever/spellcheck_benchmark`](https://huggingface.co/datasets/ai-forever/spellcheck_benchmark) (MIT): the train splits of RUSpellRU and MultidomainGold are the dev set used for all tuning; the test splits of RUSpellRU, MultidomainGold and GitHubTypoCorpusRu are scored only by the manual `typo-final-test` run. The data is downloaded on the CI runner and is neither committed nor bundled.
