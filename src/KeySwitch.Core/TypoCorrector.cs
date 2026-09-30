@@ -65,9 +65,9 @@ public sealed class TypoCorrector
     private static readonly Lazy<LanguageData> En = new(() => new("KeySwitch.en.txt", 26));
     // Russian candidates come from a list of frequent word FORMS (tools/build_ru_typo_list.py) when bundled;
     // the lemma-heavy ru.txt is the fallback. Russian uses single edits looked up directly, no delete index.
+    private static readonly bool RussianFormList = Assembly.GetExecutingAssembly().GetManifestResourceNames().Contains("KeySwitch.ru-typo.txt");
     private static readonly Lazy<LanguageData> Ru = new(() => new(
-        Assembly.GetExecutingAssembly().GetManifestResourceNames().Contains("KeySwitch.ru-typo.txt") ? "KeySwitch.ru-typo.txt" : "KeySwitch.ru.txt",
-        33, deleteIndex: false));
+        RussianFormList ? "KeySwitch.ru-typo.txt" : "KeySwitch.ru.txt", 33, deleteIndex: false));
     private static string Plain(string word) => word.Replace('ё', 'е');
     // Lowercase forms attested in edited corpora but absent from OpenCorpora (loanwords, slang, diminutives).
     private static readonly Lazy<HashSet<string>> RussianSeen = new(() =>
@@ -154,8 +154,9 @@ public sealed class TypoCorrector
     }
 
     private const int RussianRankCap = 50000;
-    // Minimum lead of the best Russian candidate over every rival (tuned on the dev set, see TypoEval --pairs).
-    internal const double RussianMargin = 4.0;
+    // Minimum lead of the best Russian candidate over every rival, calibrated per candidate list on the dev set
+    // (TypoEval --pairs): 4.0 with the word-form list (test: 88.8% precision, 22.8% recall), 2.2 with the lemma list.
+    internal static double RussianMargin => RussianFormList ? 4.0 : 2.2;
     private const string RussianLetters = "абвгдежзийклмнопрстуфхцчшщъыьэюя";
 
     private double? BestUnrankedRival(string lower, LanguageData data, string chosen, string? previous, string? previous2)
