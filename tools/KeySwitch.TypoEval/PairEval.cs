@@ -66,7 +66,7 @@ static class PairEval
                 }
                 else if (!clean && !ignored) counts.AddExample(counts.MissExamples, $"{word} -> {expected} ({decision.Reason})");
                 // Manual mode (Pause on a misspelled word): would the suggestion be the intended word?
-                if (!clean && !ignored && corrector.Suggest(word, previous, previous2, null, 0) is { ShouldCorrect: true } suggestion)
+                if (!clean && !ignored && corrector.Suggest(word, null, null, null, 0) is { ShouldCorrect: true } suggestion)
                     counts.Suggestions.Add((suggestion.Confidence, Normalize(suggestion.Corrected) == Normalize(expected)));
             }
             previous2 = previous;

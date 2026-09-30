@@ -98,8 +98,9 @@ public sealed class TypoCorrector
         return decision with { Original = word, Corrected = char.ToUpperInvariant(decision.Corrected[0]) + decision.Corrected[1..] };
     }
 
-    /// <summary>Minimum candidate lead for <see cref="Suggest"/>, tuned on the dev set (TypoEval --pairs).</summary>
-    public const double ManualMargin = 1.0;
+    /// <summary>Minimum candidate lead for <see cref="Suggest"/>: the lowest dev-set threshold (TypoEval --pairs,
+    /// ManualSweep) at which at least 95% of suggestions for real typos are the intended word (dev: 95.4%, 32.2% fixed).</summary>
+    public const double ManualMargin = 2.5;
 
     private TypoDecision Decide(string word, string? previous, string? previous2, IEnumerable<string>? exceptions, double? manualMargin)
     {
