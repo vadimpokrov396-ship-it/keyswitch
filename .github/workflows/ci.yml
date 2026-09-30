@@ -102,6 +102,12 @@ jobs:
                   for name, r in json.load(open(f"eval/{part}{suffix}.report.json")).items():
                       print(f"| {variant} | {part} | {name} | {r['Typos']} | {r['Corrected']} | {r['WrongCorrections']} | {r['FalseCorrections']} "
                             f"| {r['ChangePrecision']:.2%} | {r['Recall']:.2%} | {r['FalseCorrectionRate']:.3%} |")
+          print("\n### Confidence threshold sweep (+forms, totals)\n")
+          print("| set | threshold | precision | recall | false rate |")
+          print("|---|---:|---:|---:|---:|")
+          for part in ("dev", "test"):
+              for t, r in json.load(open(f"eval/{part}.forms.report.json"))["total"]["Sweep"].items():
+                  print(f"| {part} | {t} | {r['Precision']:.2%} | {r['Recall']:.2%} | {r['FalseRate']:.3%} |")
           PY
           cat "$GITHUB_STEP_SUMMARY"
       - name: Upload reports

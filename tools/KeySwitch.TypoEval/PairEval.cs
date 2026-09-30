@@ -59,6 +59,7 @@ static class PairEval
                 {
                     int distance = Distance(word.ToLowerInvariant(), decision.Corrected.ToLowerInvariant());
                     var bucket = counts.Bucket(distance);
+                    counts.Changes.Add((decision.Confidence, clean ? 2 : Normalize(decision.Corrected) == Normalize(expected) ? 0 : 1));
                     if (clean) { counts.FalseCorrections++; bucket[2]++; counts.AddExample(counts.FalseExamples, $"{word} -> {decision.Corrected}"); }
                     else if (Normalize(decision.Corrected) == Normalize(expected)) { counts.Corrected++; bucket[0]++; }
                     else { counts.WrongCorrections++; bucket[1]++; counts.AddExample(counts.WrongExamples, $"{word} -> {decision.Corrected} (expected {expected})"); }
@@ -116,6 +117,8 @@ sealed class PairCounts
 {
     public int Sentences, UnalignedWords, CleanWords, IgnoredEdits, Typos, Corrected, WrongCorrections, FalseCorrections;
     public List<string> FalseExamples = new(), WrongExamples = new(), MissExamples = new();
+    // Every automatic change: (confidence, outcome 0 = corrected, 1 = wrong, 2 = false on clean).
+    public List<(double Confidence, int Outcome)> Changes = new();
     // Per edit distance of the change: [corrected, wrong, false on clean].
     public SortedDictionary<int, int[]> ByDistance = new();
     public int[] Bucket(int distance) => ByDistance.TryGetValue(distance, out var b) ? b : (ByDistance[distance] = new int[3]);
@@ -125,6 +128,7 @@ sealed class PairCounts
         Sentences += other.Sentences; UnalignedWords += other.UnalignedWords; CleanWords += other.CleanWords;
         IgnoredEdits += other.IgnoredEdits; Typos += other.Typos; Corrected += other.Corrected;
         WrongCorrections += other.WrongCorrections; FalseCorrections += other.FalseCorrections;
+        Changes.AddRange(other.Changes);
         foreach (var (distance, values) in other.ByDistance) { var b = Bucket(distance); for (int i = 0; i < 3; i++) b[i] += values[i]; }
     }
     public object Summary()
@@ -137,6 +141,14 @@ sealed class PairCounts
             ChangePrecision = Math.Round((double)Corrected / Math.Max(1, changes), 4),
             Recall = Math.Round((double)Corrected / Math.Max(1, Typos), 4),
             FalseCorrectionRate = Math.Round((double)FalseCorrections / Math.Max(1, CleanWords), 5),
+            // What precision/recall a stricter confidence threshold would give (changes below it are skipped).
+            Sweep = new[] { 2.2, 2.6, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0, 7.0 }.ToDictionary(t => t.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture), t =>
+            {
+                int c = Changes.Count(x => x.Confidence >= t && x.Outcome == 0), w = Changes.Count(x => x.Confidence >= t && x.Outcome == 1),
+                    f = Changes.Count(x => x.Confidence >= t && x.Outcome == 2);
+                return new { Precision = Math.Round((double)c / Math.Max(1, c + w + f), 4), Recall = Math.Round((double)c / Math.Max(1, Typos), 4),
+                    FalseRate = Math.Round((double)f / Math.Max(1, CleanWords), 5) };
+            }),
             ByDistance = ByDistance.ToDictionary(x => x.Key.ToString(), x => new { Corrected = x.Value[0], Wrong = x.Value[1], FalseOnClean = x.Value[2] }),
             FalseExamples, WrongExamples, MissExamples,
         };

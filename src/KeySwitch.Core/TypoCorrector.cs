@@ -135,8 +135,12 @@ public sealed class TypoCorrector
         // The ranked list holds only frequent words. A real form from the full lexicon (OpenCorpora for RU) one edit
         // away is scored as if it were just below the ranked list (its true frequency can only be lower); if it
         // comes within the margin of the best candidate, the intended word is unclear.
-        if (russian && BestUnrankedRival(lower, data, best.Entry.Word, previous, previous2) is double rival &&
-            best.Score - rival < 2.2) return Keep("ambiguous-form");
+        if (russian && BestUnrankedRival(lower, data, best.Entry.Word, previous, previous2) is double rival)
+        {
+            if (best.Score - rival < 2.2) return Keep("ambiguous-form");
+            margin = Math.Min(margin, best.Score - rival);
+        }
+        if (russian && margin < RussianMargin) return Keep("ambiguous-candidate");
         return new(true, word, best.Entry.Word, margin, "typo-autocorrect");
     }
 
@@ -150,6 +154,8 @@ public sealed class TypoCorrector
     }
 
     private const int RussianRankCap = 50000;
+    // Minimum lead of the best Russian candidate over every rival (tuned on the dev set, see TypoEval --pairs).
+    internal const double RussianMargin = 2.2;
     private const string RussianLetters = "абвгдежзийклмнопрстуфхцчшщъыьэюя";
 
     private double? BestUnrankedRival(string lower, LanguageData data, string chosen, string? previous, string? previous2)
