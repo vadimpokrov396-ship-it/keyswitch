@@ -108,6 +108,11 @@ jobs:
           print("|---:|---:|---:|---:|")
           for t, r in json.load(open("eval/dev.report.json"))["total"]["Sweep"].items():
               print(f"| {t} | {r['Precision']:.2%} | {r['Recall']:.2%} | {r['FalseRate']:.3%} |")
+          print("\n### Manual (Pause) suggestion threshold sweep (dev)\n")
+          print("| threshold | right among suggestions | typos fixed |")
+          print("|---:|---:|---:|")
+          for t, r in json.load(open("eval/dev.report.json"))["total"]["ManualSweep"].items():
+              print(f"| {t} | {r['Accuracy']:.2%} | {r['Coverage']:.2%} |")
           PY
           cat "$GITHUB_STEP_SUMMARY"
       - name: Upload reports

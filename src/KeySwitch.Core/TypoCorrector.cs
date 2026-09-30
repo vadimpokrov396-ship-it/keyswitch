@@ -83,8 +83,27 @@ public sealed class TypoCorrector
     public TypoCorrector(DecisionEngine? layout = null) => this.layout = layout ?? new DecisionEngine();
 
     public TypoDecision Evaluate(string word, string? previous = null, string? previous2 = null,
-        IEnumerable<string>? exceptions = null)
+        IEnumerable<string>? exceptions = null) => Decide(word, previous, previous2, exceptions, null);
+
+    /// <summary>Spelling fix the user asked for (Pause / double Shift) with a lower bar than automatic correction:
+    /// works while Russian auto-correction is off and accepts a candidate leading every rival by
+    /// <paramref name="minMargin"/>. A capitalized word is fixed in lower case and re-capitalized.</summary>
+    public TypoDecision Suggest(string word, string? previous = null, string? previous2 = null,
+        IEnumerable<string>? exceptions = null, double minMargin = ManualMargin)
     {
+        bool capitalized = word.Length > 1 && char.IsUpper(word[0]) && !word.Skip(1).Any(char.IsUpper);
+        string lower = capitalized ? char.ToLowerInvariant(word[0]) + word[1..] : word;
+        var decision = Decide(lower, previous, previous2, exceptions, minMargin);
+        if (!decision.ShouldCorrect || !capitalized) return decision with { Original = word };
+        return decision with { Original = word, Corrected = char.ToUpperInvariant(decision.Corrected[0]) + decision.Corrected[1..] };
+    }
+
+    /// <summary>Minimum candidate lead for <see cref="Suggest"/>, tuned on the dev set (TypoEval --pairs).</summary>
+    public const double ManualMargin = 1.0;
+
+    private TypoDecision Decide(string word, string? previous, string? previous2, IEnumerable<string>? exceptions, double? manualMargin)
+    {
+        bool manual = manualMargin is not null;
         TypoDecision Keep(string reason) => new(false, word, word, 0, reason);
         if (word.Length < 4 || word.Length > 32 || !word.All(char.IsLetter)) return Keep("protected-shape");
         if (word.Any(char.IsDigit) || word.All(char.IsUpper) || char.IsUpper(word[0]) || word.Skip(1).Any(char.IsUpper))
@@ -93,9 +112,9 @@ public sealed class TypoCorrector
         bool russian = word.All(c => c is >= 'а' and <= 'я' or 'ё');
         bool english = word.All(c => c is >= 'a' and <= 'z');
         if (!russian && !english) return Keep("protected-script");
-        if (russian && !RussianEnabled) return Keep("ru-typo-disabled");
+        if (russian && !RussianEnabled && !manual) return Keep("ru-typo-disabled");
         // Four-letter Russian words have too many real neighbours (таку -> так, блан -> план) to change safely.
-        if (russian && word.Length < 5) return Keep("protected-shape");
+        if (russian && word.Length < 5 && !manual) return Keep("protected-shape");
         if (layout.IsKnownWord(word, russian)) return Keep("known-original");
         if (russian && RussianSeen.Value.Contains(Plain(word.ToLowerInvariant()))) return Keep("known-corpus");
         var data = russian ? Ru.Value : En.Value;
@@ -131,17 +150,18 @@ public sealed class TypoCorrector
         double margin = scored.Count == 1 ? 4 : best.Score - scored[1].Score;
         // A strict margin protects unknown names and foreign words absent from the Bloom lexicon.
         // The Russian list holds word forms, so the same frequency spans far more ranks than in a lemma list.
-        if (margin < 2.2 || best.Entry.Rank > (russian ? RussianRankCap : 12000)) return Keep("ambiguous-candidate");
+        double required = manualMargin ?? 2.2;
+        if (margin < required || best.Entry.Rank > (russian ? RussianRankCap : 12000)) return Keep("ambiguous-candidate");
         // The ranked list holds only frequent words. A real form from the full lexicon (OpenCorpora for RU) one edit
         // away is scored as if it were just below the ranked list (its true frequency can only be lower); if it
         // comes within the margin of the best candidate, the intended word is unclear.
         if (russian && BestUnrankedRival(lower, data, best.Entry.Word, previous, previous2) is double rival)
         {
-            if (best.Score - rival < 2.2) return Keep("ambiguous-form");
+            if (best.Score - rival < required) return Keep("ambiguous-form");
             margin = Math.Min(margin, best.Score - rival);
         }
-        if (russian && margin < RussianMargin) return Keep("ambiguous-candidate");
-        return new(true, word, best.Entry.Word, margin, "typo-autocorrect");
+        if (!manual && russian && margin < RussianMargin) return Keep("ambiguous-candidate");
+        return new(true, word, best.Entry.Word, margin, manual ? "typo-manual" : "typo-autocorrect");
     }
 
     private double Score(LanguageData data, string candidate, int rank, double cost, string? previous, string? previous2, bool russian)

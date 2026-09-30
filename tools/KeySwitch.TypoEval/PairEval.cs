@@ -65,6 +65,9 @@ static class PairEval
                     else { counts.WrongCorrections++; bucket[1]++; counts.AddExample(counts.WrongExamples, $"{word} -> {decision.Corrected} (expected {expected})"); }
                 }
                 else if (!clean && !ignored) counts.AddExample(counts.MissExamples, $"{word} -> {expected} ({decision.Reason})");
+                // Manual mode (Pause on a misspelled word): would the suggestion be the intended word?
+                if (!clean && !ignored && corrector.Suggest(word, previous, previous2, null, 0) is { ShouldCorrect: true } suggestion)
+                    counts.Suggestions.Add((suggestion.Confidence, Normalize(suggestion.Corrected) == Normalize(expected)));
             }
             previous2 = previous;
             previous = word.ToLowerInvariant();
@@ -117,6 +120,8 @@ sealed class PairCounts
 {
     public int Sentences, UnalignedWords, CleanWords, IgnoredEdits, Typos, Corrected, WrongCorrections, FalseCorrections;
     public List<string> FalseExamples = new(), WrongExamples = new(), MissExamples = new();
+    // Manual suggestions for real typos: (confidence, suggestion == intended word).
+    public List<(double Confidence, bool Right)> Suggestions = new();
     // Every automatic change: (confidence, outcome 0 = corrected, 1 = wrong, 2 = false on clean).
     public List<(double Confidence, int Outcome)> Changes = new();
     // Per edit distance of the change: [corrected, wrong, false on clean].
@@ -129,6 +134,7 @@ sealed class PairCounts
         IgnoredEdits += other.IgnoredEdits; Typos += other.Typos; Corrected += other.Corrected;
         WrongCorrections += other.WrongCorrections; FalseCorrections += other.FalseCorrections;
         Changes.AddRange(other.Changes);
+        Suggestions.AddRange(other.Suggestions);
         foreach (var (distance, values) in other.ByDistance) { var b = Bucket(distance); for (int i = 0; i < 3; i++) b[i] += values[i]; }
     }
     public object Summary()
@@ -148,6 +154,12 @@ sealed class PairCounts
                     f = Changes.Count(x => x.Confidence >= t && x.Outcome == 2);
                 return new { Precision = Math.Round((double)c / Math.Max(1, c + w + f), 4), Recall = Math.Round((double)c / Math.Max(1, Typos), 4),
                     FalseRate = Math.Round((double)f / Math.Max(1, CleanWords), 5) };
+            }),
+            // Pause on a misspelled word: share of suggestions that are right, and share of typos fixed that way.
+            ManualSweep = new[] { 0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0 }.ToDictionary(t => t.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture), t =>
+            {
+                int right = Suggestions.Count(x => x.Confidence >= t && x.Right), wrong = Suggestions.Count(x => x.Confidence >= t && !x.Right);
+                return new { Accuracy = Math.Round((double)right / Math.Max(1, right + wrong), 4), Coverage = Math.Round((double)right / Math.Max(1, Typos), 4) };
             }),
             ByDistance = ByDistance.ToDictionary(x => x.Key.ToString(), x => new { Corrected = x.Value[0], Wrong = x.Value[1], FalseOnClean = x.Value[2] }),
             FalseExamples, WrongExamples, MissExamples,

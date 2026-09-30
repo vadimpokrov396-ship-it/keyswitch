@@ -1,0 +1,52 @@
+using KeySwitch.Core;
+using Xunit;
+
+namespace KeySwitch.Core.Tests;
+
+// Pause / double Shift: layout conversion when it yields a known word, otherwise a spelling fix, otherwise layout.
+public sealed class ManualFixTests
+{
+    private static readonly BoundaryEngine Boundary = new(new DecisionEngine());
+
+    [Fact]
+    public void WrongLayoutWordIsConverted()
+    {
+        var fix = Boundary.Manual("ghbdtn");
+        Assert.Equal("привет", fix.Replacement);
+        Assert.True(fix.LayoutChange);
+    }
+
+    [Fact]
+    public void RussianMisspellingIsFixedEvenWithRussianAutoCorrectionOff()
+    {
+        bool saved = TypoCorrector.RussianEnabled;
+        TypoCorrector.RussianEnabled = false;
+        try
+        {
+            var fix = Boundary.Manual("превет");
+            Assert.Equal("привет", fix.Replacement);
+            Assert.False(fix.LayoutChange);
+            Assert.Equal("typo-manual", fix.Reason);
+            Assert.Equal("Привет", Boundary.Manual("Превет").Replacement);
+        }
+        finally { TypoCorrector.RussianEnabled = saved; }
+    }
+
+    [Fact]
+    public void EnglishMisspellingIsFixed()
+    {
+        var fix = Boundary.Manual("becuase");
+        Assert.Equal("because", fix.Replacement);
+        Assert.False(fix.LayoutChange);
+    }
+
+    [Theory]
+    [InlineData("hello")]
+    [InlineData("привет")]
+    public void CorrectWordsKeepTheOldLayoutConversion(string word)
+    {
+        var fix = Boundary.Manual(word);
+        Assert.Equal(LayoutMap.Convert(word), fix.Replacement);
+        Assert.True(fix.LayoutChange);
+    }
+}
