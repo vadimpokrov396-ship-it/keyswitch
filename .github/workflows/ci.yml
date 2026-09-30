@@ -81,7 +81,9 @@ jobs:
           python3 - <<'PY'
           import json
           for name, r in json.load(open("eval/dev.report.json")).items():
-              if name == "total": continue
+              if name == "total":
+                  print("--- dev by edit distance:", r["ByDistance"])
+                  continue
               for kind in ("WrongExamples", "FalseExamples", "MissExamples"):
                   print(f"--- {name} {kind}")
                   for example in r[kind][:25]: print("  ", example)

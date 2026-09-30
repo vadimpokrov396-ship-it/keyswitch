@@ -16,6 +16,9 @@ public sealed class TypoCorrector
     {
         public readonly Dictionary<string, Entry> Words = new(StringComparer.Ordinal);
         public readonly Dictionary<string, List<Entry>> Deletes = new(StringComparer.Ordinal);
+        // Ranked words with ё spelled е, as users usually type them.
+        private readonly HashSet<string> plainWords = new(StringComparer.Ordinal);
+        public bool Ranked(string word) => plainWords.Contains(word.Replace('ё', 'е'));
         public readonly Dictionary<string, double> Trigrams = new(StringComparer.Ordinal);
         public double TotalTrigrams;
         public readonly int Alphabet;
@@ -32,6 +35,7 @@ public sealed class TypoCorrector
                 if (word.Length < 2 || word.Length > 32 || !word.All(char.IsLetter) || Words.ContainsKey(word)) continue;
                 var entry = new Entry(word, ++rank);
                 Words.Add(word, entry);
+                plainWords.Add(word.Replace('ё', 'е'));
                 // Full one-edit vocabulary; the two-edit index is limited to frequent words.
                 foreach (var deleted in DeletesOf(word, rank <= 15000 ? 2 : 1))
                 {
@@ -118,7 +122,7 @@ public sealed class TypoCorrector
     {
         foreach (string form in SingleEdits(lower, RussianLetters))
         {
-            if (form == chosen || form.Length < 2 || data.Words.ContainsKey(form) || !layout.IsKnownWord(form, true)) continue;
+            if (form == chosen || form.Length < 2 || data.Ranked(form) || !layout.IsKnownWord(form, true)) continue;
             if (EditCost(lower, form, true) <= chosenCost + RivalCostSlack) return true;
         }
         return false;
