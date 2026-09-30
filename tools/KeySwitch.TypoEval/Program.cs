@@ -2,7 +2,13 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using KeySwitch.Core;
 
-if (args.Length != 2) throw new ArgumentException("Usage: KeySwitch.TypoEval heldout_sentences.tsv output.json");
+if (args.Length >= 3 && args[0] == "--pairs")
+{
+    PairEval.Run(args[1], args[2..]);
+    return;
+}
+if (args.Length != 2) throw new ArgumentException("Usage: KeySwitch.TypoEval heldout_sentences.tsv output.json\n" +
+    "       KeySwitch.TypoEval --pairs output.json pairs.jsonl [pairs.jsonl ...]");
 var layout = new DecisionEngine();
 var corrector = new TypoCorrector(layout);
 var results = new Dictionary<string, Counts> { ["ru"] = new(), ["en"] = new() };

@@ -38,6 +38,50 @@ jobs:
           path: artifacts/*.trx
           if-no-files-found: ignore
 
+  # Russian typo correction on real misspellings (ai-forever/spellcheck_benchmark, MIT). The data is
+  # downloaded on the runner and never committed. "dev" (train splits) is for tuning, "test" only for reporting.
+  typo-eval:
+    name: Typo correction quality (RU, real typos)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - name: Download benchmark
+        run: |
+          base=https://huggingface.co/datasets/ai-forever/spellcheck_benchmark/resolve/main/data
+          mkdir -p eval/dev eval/test
+          for f in RUSpellRU/train MultidomainGold/train; do
+            mkdir -p "eval/dev/$(dirname $f)"; curl -fsSL --retry 3 -o "eval/dev/$f.json" "$base/$f.json"; done
+          for f in RUSpellRU/test MultidomainGold/test GitHubTypoCorpusRu/test; do
+            mkdir -p "eval/test/$(dirname $f)"; curl -fsSL --retry 3 -o "eval/test/$f.json" "$base/$f.json"; done
+          find eval -name '*.json' -exec sha256sum {} +
+      - name: Evaluate
+        run: |
+          dotnet build tools/KeySwitch.TypoEval -c Release -v q
+          dotnet run --no-build --project tools/KeySwitch.TypoEval -c Release -- --pairs eval/dev.report.json $(find eval/dev -name '*.json' | sort) > /dev/null
+          dotnet run --no-build --project tools/KeySwitch.TypoEval -c Release -- --pairs eval/test.report.json $(find eval/test -name '*.json' | sort) > /dev/null
+      - name: Summary
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          print("## RU typo correction on real misspellings\n")
+          print("| set | file | typos | corrected | wrong | false on clean | change precision | recall | false rate |")
+          print("|---|---|---:|---:|---:|---:|---:|---:|---:|")
+          for part in ("dev", "test"):
+              for name, r in json.load(open(f"eval/{part}.report.json")).items():
+                  print(f"| {part} | {name} | {r['Typos']} | {r['Corrected']} | {r['WrongCorrections']} | {r['FalseCorrections']} "
+                        f"| {r['ChangePrecision']:.2%} | {r['Recall']:.2%} | {r['FalseCorrectionRate']:.3%} |")
+          PY
+          cat "$GITHUB_STEP_SUMMARY"
+      - name: Upload reports
+        uses: actions/upload-artifact@v5
+        with:
+          name: typo-eval
+          path: eval/*.report.json
+
   windows:
     name: Build, package, selftest (Windows)
     runs-on: windows-latest
