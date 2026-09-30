@@ -31,6 +31,8 @@ internal sealed class KeyboardController : IDisposable
     private bool suppressToken;
     private readonly HashSet<Keys> swallowedUp = new();
     private long lastUipiWarning;
+    private uint cachedPid;
+    private string cachedProcess = "";
     internal IntPtr SelfTestFocus { get; set; }
     internal bool Suspended { get => suspended; set { suspended = value; Reset(); } }
     internal long InputRevision => Interlocked.Read(ref inputRevision);
@@ -97,7 +99,13 @@ internal sealed class KeyboardController : IDisposable
                     FocusGuard.TryGetSnapshot(out var snapshot);
                     IntPtr layout = snapshot.Thread == 0 ? IntPtr.Zero : Native.GetKeyboardLayout(snapshot.Thread);
                     if (up && swallowedUp.Remove(vk)) suppress = true;
-                    if (shiftKey)
+                    if (IsExcludedProcess(snapshot.Window))
+                    {
+                        // Excluded apps (e.g. mstsc.exe) get every key untouched, hotkeys and Enter/Tab
+                        // included, so a KeySwitch running inside the remote session receives them.
+                        if (down) Post(Reset);
+                    }
+                    else if (shiftKey)
                     {
                         bool gesture = shiftTaps.Update((int)vk, down, Environment.TickCount64, control || alt || win);
                         if (gesture && settings.DoubleShiftEnabled)
@@ -362,6 +370,20 @@ internal sealed class KeyboardController : IDisposable
         vk is >= Keys.A and <= Keys.Z or >= Keys.D0 and <= Keys.D9 or >= Keys.NumPad0 and <= Keys.Divide
             or >= Keys.OemSemicolon and <= Keys.Oemtilde or >= Keys.OemOpenBrackets and <= Keys.OemBackslash
             ? "text" : ((int)vk).ToString();
+    // Called from the hook: resolve the process name only when the foreground process changes.
+    private bool IsExcludedProcess(IntPtr window)
+    {
+        if (window == IntPtr.Zero) return false;
+        Native.GetWindowThreadProcessId(window, out uint pid);
+        if (pid != cachedPid)
+        {
+            try { using var process = Process.GetProcessById((int)pid); cachedProcess = process.ProcessName + ".exe"; }
+            catch { cachedProcess = ""; }
+            cachedPid = pid;
+        }
+        return cachedProcess.Length > 0 &&
+            settings.ExcludedProcesses.Any(x => x.Trim().Equals(cachedProcess, StringComparison.OrdinalIgnoreCase));
+    }
     private static bool Down(Keys key) => (Native.GetAsyncKeyState((int)key) & 0x8000) != 0;
     private static bool Same(FocusTarget a, FocusTarget b) => a.Window != IntPtr.Zero && a.Window == b.Window && a.Focus == b.Focus;
     private static bool IsRussian(string value) => value.Any(c => c is >= 'А' and <= 'я' or 'ё' or 'Ё');
