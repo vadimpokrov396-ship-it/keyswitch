@@ -16,6 +16,21 @@ public sealed class TypoTests
         Assert.Equal("typo-autocorrect", result.Reason);
     }
 
+    // The Windows selftest (KeySwitch.exe --selftest) relies on exactly this correction.
+    [Fact]
+    public void CorrectsEnglishSelftestTypo()
+    {
+        var result = new BoundaryEngine(new DecisionEngine()).Complete("becuase", " ");
+        Assert.Equal("because", result.Replacement);
+        Assert.Equal("typo-autocorrect", result.Reason);
+    }
+
+    [Fact]
+    public void ShortWordsAreNeverTypoCorrected()
+    {
+        Assert.False(new BoundaryEngine(new DecisionEngine()).Complete("teh", " ").Changed);
+    }
+
     [Theory]
     [InlineData("привет")]
     [InlineData("hello")]

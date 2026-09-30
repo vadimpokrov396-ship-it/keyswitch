@@ -342,13 +342,13 @@ internal sealed class SelfTestForm : Form
             bool layoutPass = layoutText == "привет ";
             editor.Clear();
             await Task.Delay(100);
-            IntPtr russian = Native.LoadKeyboardLayout("00000419", 0);
-            Native.ActivateKeyboardLayout(russian, 0);
+            // The first stage switched the field to Russian; typo correction is checked in English.
+            // Words shorter than 4 letters are never typo-corrected, so the typo must be longer.
+            Native.ActivateKeyboardLayout(english, 0);
             await Task.Delay(100);
-            // Keys T, E, H under the Russian layout produce "еур": layout switch plus the EN typo "teh" -> "the".
-            await TypeKeysAsync("teh ");
+            await TypeKeysAsync("becuase ");
             await Task.Delay(300);
-            bool typoPass = editor.Text == "the ";
+            bool typoPass = editor.Text == "because ";
             pass = layoutPass && typoPass;
             // The test field only ever holds the synthetic selftest text, so logging it is safe.
             status = $"layout_match={layoutPass} typo_match={typoPass} layout_actual=\"{layoutText}\" typo_actual=\"{editor.Text}\"";
@@ -356,7 +356,7 @@ internal sealed class SelfTestForm : Form
         catch (Exception error) { status = $"exception={error.GetType().Name} hresult=0x{error.HResult:X} message={error.Message}"; }
         finally { keyboard?.Dispose(); Diagnostics.Write($"selftest pass={pass} {status}"); Diagnostics.FlushNow(); }
         Environment.ExitCode = pass ? 0 : 1;
-        if (!quiet) MessageBox.Show(pass ? "Самопроверка пройдена: ghbdtn → привет; teh → the" : "Самопроверка не пройдена. Откройте %AppData%\\KeySwitch\\diag.log и передайте лог разработчику.",
+        if (!quiet) MessageBox.Show(pass ? "Самопроверка пройдена: ghbdtn → привет; becuase → because" : "Самопроверка не пройдена. Откройте %AppData%\\KeySwitch\\diag.log и передайте лог разработчику.",
             "KeySwitch — самопроверка", MessageBoxButtons.OK, pass ? MessageBoxIcon.Information : MessageBoxIcon.Error);
         Close();
     }
