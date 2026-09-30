@@ -4,6 +4,8 @@ using Xunit;
 namespace KeySwitch.Core.Tests;
 
 // Pause / double Shift: layout conversion when it yields a known word, otherwise a spelling fix, otherwise layout.
+// TypoCorrector.RussianEnabled is static: tests that switch it must not run in parallel.
+[Collection(RussianSwitch.Name)]
 public sealed class ManualFixTests
 {
     private static readonly BoundaryEngine Boundary = new(new DecisionEngine());

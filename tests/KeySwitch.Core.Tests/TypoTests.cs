@@ -3,6 +3,8 @@ using Xunit;
 
 namespace KeySwitch.Core.Tests;
 
+// TypoCorrector.RussianEnabled is static: tests that switch it must not run in parallel.
+[Collection(RussianSwitch.Name)]
 public sealed class TypoTests
 {
     public TypoTests() { TypoCorrector.RussianEnabled = true; }

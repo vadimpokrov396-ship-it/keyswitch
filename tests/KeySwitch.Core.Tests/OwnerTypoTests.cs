@@ -4,6 +4,8 @@ using Xunit;
 namespace KeySwitch.Core.Tests;
 
 // Regression set "owner_typos" (fixtures/owner_typos.txt): real typos from the owner's messages.
+// TypoCorrector.RussianEnabled is static: tests that switch it must not run in parallel.
+[Collection(RussianSwitch.Name)]
 public sealed class OwnerTypoTests
 {
     public static IEnumerable<object[]> Pairs() => File.ReadLines(Path.Combine(AppContext.BaseDirectory, "fixtures", "owner_typos.txt"))
