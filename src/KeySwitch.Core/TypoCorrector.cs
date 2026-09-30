@@ -14,15 +14,15 @@ public sealed class TypoCorrector
     private sealed record Entry(string Word, int Rank);
     private sealed class LanguageData
     {
+        // Keyed with ё spelled е, as users usually type it.
         public readonly Dictionary<string, Entry> Words = new(StringComparer.Ordinal);
         public readonly Dictionary<string, List<Entry>> Deletes = new(StringComparer.Ordinal);
-        // Ranked words with ё spelled е, as users usually type them.
-        private readonly HashSet<string> plainWords = new(StringComparer.Ordinal);
-        public bool Ranked(string word) => plainWords.Contains(word.Replace('ё', 'е'));
+        public bool Ranked(string word) => Words.ContainsKey(Plain(word));
+        public Entry? Find(string word) => Words.GetValueOrDefault(Plain(word));
         public readonly Dictionary<string, double> Trigrams = new(StringComparer.Ordinal);
         public double TotalTrigrams;
         public readonly int Alphabet;
-        public LanguageData(string resource, int alphabet)
+        public LanguageData(string resource, int alphabet, bool deleteIndex = true)
         {
             Alphabet = alphabet;
             using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(resource)
@@ -32,12 +32,11 @@ public sealed class TypoCorrector
             while (reader.ReadLine() is { } line)
             {
                 var word = line.Trim().ToLowerInvariant();
-                if (word.Length < 2 || word.Length > 32 || !word.All(char.IsLetter) || Words.ContainsKey(word)) continue;
+                if (word.Length < 2 || word.Length > 32 || !word.All(char.IsLetter) || Words.ContainsKey(Plain(word))) continue;
                 var entry = new Entry(word, ++rank);
-                Words.Add(word, entry);
-                plainWords.Add(word.Replace('ё', 'е'));
+                Words.Add(Plain(word), entry);
                 // Full one-edit vocabulary; the two-edit index is limited to frequent words.
-                foreach (var deleted in DeletesOf(word, rank <= 15000 ? 2 : 1))
+                if (deleteIndex) foreach (var deleted in DeletesOf(word, rank <= 15000 ? 2 : 1))
                 {
                     if (!Deletes.TryGetValue(deleted, out var entries)) Deletes[deleted] = entries = new();
                     entries.Add(entry);
@@ -64,7 +63,12 @@ public sealed class TypoCorrector
     }
 
     private static readonly Lazy<LanguageData> En = new(() => new("KeySwitch.en.txt", 26));
-    private static readonly Lazy<LanguageData> Ru = new(() => new("KeySwitch.ru.txt", 33));
+    // Russian candidates come from a list of frequent word FORMS (tools/build_ru_typo_list.py) when bundled;
+    // the lemma-heavy ru.txt is the fallback. Russian uses single edits looked up directly, no delete index.
+    private static readonly Lazy<LanguageData> Ru = new(() => new(
+        Assembly.GetExecutingAssembly().GetManifestResourceNames().Contains("KeySwitch.ru-typo.txt") ? "KeySwitch.ru-typo.txt" : "KeySwitch.ru.txt",
+        33, deleteIndex: false));
+    private static string Plain(string word) => word.Replace('ё', 'е');
     private readonly DecisionEngine layout;
     public TypoCorrector(DecisionEngine? layout = null) => this.layout = layout ?? new DecisionEngine();
 
@@ -83,21 +87,29 @@ public sealed class TypoCorrector
         if (layout.IsKnownWord(word, russian)) return Keep("known-original");
         var data = russian ? Ru.Value : En.Value;
         string lower = word.ToLowerInvariant();
-        int maxDistance = lower.Length >= 8 ? 2 : 1;
+        // Two-edit corrections in Russian were mostly wrong on real typos (dev set: 13 right, 51 wrong or false).
+        int maxDistance = !russian && lower.Length >= 8 ? 2 : 1;
         var candidates = new HashSet<Entry>();
-        foreach (var deleted in DeletesOf(lower, maxDistance))
-            if (data.Deletes.TryGetValue(deleted, out var entries))
-                foreach (var entry in entries) candidates.Add(entry);
+        if (russian)
+        {
+            foreach (var edit in SingleEdits(lower, RussianLetters))
+                if (data.Find(edit) is { } entry) candidates.Add(entry);
+        }
+        else
+            foreach (var deleted in DeletesOf(lower, maxDistance))
+                if (data.Deletes.TryGetValue(deleted, out var entries))
+                    foreach (var entry in entries) candidates.Add(entry);
         // The exact word is in neither ranked lexicon nor the Bloom filter here.
         var scored = new List<(Entry Entry, double Score, double Cost)>();
         foreach (var entry in candidates)
         {
             if (Math.Abs(entry.Word.Length - lower.Length) > maxDistance) continue;
-            int distance = EditDistance(lower, entry.Word, maxDistance);
+            string plain = Plain(entry.Word);
+            int distance = EditDistance(Plain(lower), plain, maxDistance);
             if (distance == 0 || distance > maxDistance) continue;
             // A second edit requires a common destination and a plausible word shape.
             if (distance == 2 && (entry.Rank > 10000 || lower.Length < 8)) continue;
-            double cost = distance == 2 ? 3.2 : EditCost(lower, entry.Word, russian);
+            double cost = distance == 2 ? 3.2 : EditCost(Plain(lower), plain, russian);
             scored.Add((entry, Score(data, entry.Word, entry.Rank, cost, previous, previous2, russian), cost));
         }
         if (scored.Count == 0) return Keep("no-candidate");
@@ -105,7 +117,8 @@ public sealed class TypoCorrector
         var best = scored[0];
         double margin = scored.Count == 1 ? 4 : best.Score - scored[1].Score;
         // A strict margin protects unknown names and foreign words absent from the Bloom lexicon.
-        if (margin < 2.2 || best.Entry.Rank > 12000) return Keep("ambiguous-candidate");
+        // The Russian list holds word forms, so the same frequency spans far more ranks than in a lemma list.
+        if (margin < 2.2 || best.Entry.Rank > (russian ? RussianRankCap : 12000)) return Keep("ambiguous-candidate");
         // The ranked list holds only frequent words. A real form from the full lexicon (OpenCorpora for RU) one edit
         // away is scored as if it were just below the ranked list (its true frequency can only be lower); if it
         // comes within the margin of the best candidate, the intended word is unclear.
@@ -123,6 +136,7 @@ public sealed class TypoCorrector
         return frequency - 1.5 * cost + 0.65 * language + 0.3 * modelLanguage + context;
     }
 
+    private const int RussianRankCap = 50000;
     private const string RussianLetters = "абвгдежзийклмнопрстуфхцчшщъыьэюя";
 
     private double? BestUnrankedRival(string lower, LanguageData data, string chosen, string? previous, string? previous2)
@@ -130,7 +144,7 @@ public sealed class TypoCorrector
         double? best = null;
         foreach (string form in SingleEdits(lower, RussianLetters))
         {
-            if (form == chosen || form.Length < 2 || data.Ranked(form) || !layout.IsKnownWord(form, true)) continue;
+            if (form == Plain(chosen) || form.Length < 2 || data.Ranked(form) || !layout.IsKnownWord(form, true)) continue;
             double score = Score(data, form, data.Words.Count + 1, EditCost(lower, form, true), previous, previous2, true);
             if (best is null || score > best) best = score;
         }

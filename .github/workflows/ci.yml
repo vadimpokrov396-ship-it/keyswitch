@@ -43,7 +43,7 @@ jobs:
   typo-eval:
     name: Typo correction quality (RU, real typos)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-dotnet@v5
@@ -58,29 +58,44 @@ jobs:
           for f in RUSpellRU/test MultidomainGold/test GitHubTypoCorpusRu/test; do
             mkdir -p "eval/test/$(dirname $f)"; curl -fsSL --retry 3 -o "eval/test/$f.json" "$base/$f.json"; done
           find eval -name '*.json' -exec sha256sum {} +
-      - name: Evaluate
+      - name: Evaluate (bundled word lists)
         run: |
           dotnet build tools/KeySwitch.TypoEval -c Release -v q
           dotnet run --no-build --project tools/KeySwitch.TypoEval -c Release -- --pairs eval/dev.report.json $(find eval/dev -name '*.json' | sort) > /dev/null
           dotnet run --no-build --project tools/KeySwitch.TypoEval -c Release -- --pairs eval/test.report.json $(find eval/test -name '*.json' | sort) > /dev/null
+      # Candidate RU word-form list from the Leipzig packs already used for training (CC BY); evaluated before bundling.
+      - name: Build RU word-form list
+        if: hashFiles('data/ru-typo.txt') == ''
+        run: |
+          mkdir -p leipzig
+          for pack in rus_news_2020_1M rus_wikipedia_2021_1M; do
+            curl -fsSL --retry 3 -o "leipzig/$pack.tar.gz" "https://downloads.wortschatz-leipzig.de/corpora/$pack.tar.gz"; done
+          python3 tools/build_ru_typo_list.py data/ru-typo.txt 200000 leipzig/*.tar.gz
+          head -30 data/ru-typo.txt | tr '\n' ' '; echo
+      - name: Evaluate (with RU word-form list)
+        run: |
+          dotnet build tools/KeySwitch.TypoEval -c Release -v q
+          dotnet run --no-build --project tools/KeySwitch.TypoEval -c Release -- --pairs eval/dev.forms.report.json $(find eval/dev -name '*.json' | sort) > /dev/null
+          dotnet run --no-build --project tools/KeySwitch.TypoEval -c Release -- --pairs eval/test.forms.report.json $(find eval/test -name '*.json' | sort) > /dev/null
       - name: Summary
         run: |
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
           print("## RU typo correction on real misspellings\n")
-          print("| set | file | typos | corrected | wrong | false on clean | change precision | recall | false rate |")
-          print("|---|---|---:|---:|---:|---:|---:|---:|---:|")
-          for part in ("dev", "test"):
-              for name, r in json.load(open(f"eval/{part}.report.json")).items():
-                  print(f"| {part} | {name} | {r['Typos']} | {r['Corrected']} | {r['WrongCorrections']} | {r['FalseCorrections']} "
-                        f"| {r['ChangePrecision']:.2%} | {r['Recall']:.2%} | {r['FalseCorrectionRate']:.3%} |")
+          print("| lists | set | file | typos | corrected | wrong | false on clean | change precision | recall | false rate |")
+          print("|---|---|---|---:|---:|---:|---:|---:|---:|---:|")
+          for variant, suffix in (("bundled", ""), ("+forms", ".forms")):
+              for part in ("dev", "test"):
+                  for name, r in json.load(open(f"eval/{part}{suffix}.report.json")).items():
+                      print(f"| {variant} | {part} | {name} | {r['Typos']} | {r['Corrected']} | {r['WrongCorrections']} | {r['FalseCorrections']} "
+                            f"| {r['ChangePrecision']:.2%} | {r['Recall']:.2%} | {r['FalseCorrectionRate']:.3%} |")
           PY
           cat "$GITHUB_STEP_SUMMARY"
       - name: Dev examples (for tuning; test examples are not printed)
         run: |
           python3 - <<'PY'
           import json
-          for name, r in json.load(open("eval/dev.report.json")).items():
+          for name, r in json.load(open("eval/dev.forms.report.json")).items():
               if name == "total":
                   print("--- dev by edit distance:", r["ByDistance"])
                   continue
@@ -92,7 +107,9 @@ jobs:
         uses: actions/upload-artifact@v5
         with:
           name: typo-eval
-          path: eval/*.report.json
+          path: |
+            eval/*.report.json
+            data/ru-typo.txt
 
   windows:
     name: Build, package, selftest (Windows)
