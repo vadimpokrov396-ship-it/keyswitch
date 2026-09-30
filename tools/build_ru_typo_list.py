@@ -12,7 +12,7 @@ know but that occur at least SEEN_MIN times in the edited corpora (loanwords, sl
 
 Usage: build_ru_typo_list.py OUTPUT LIMIT PACK.tar.gz [PACK.tar.gz ...]
 """
-import collections, pathlib, re, struct, sys, tarfile
+import collections, hashlib, pathlib, re, struct, sys, tarfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MASK = (1 << 64) - 1
@@ -42,13 +42,21 @@ class Bloom:
         return True
 
 
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
 def main(output, limit, packs):
     counts = collections.Counter()
+    manifest = [f'# Built by tools/build_ru_typo_list.py (limit {limit}, min count 3, seen min {SEEN_MIN}, seen length >= 5)']
     for pack in packs:
+        manifest.append(f'pack {pathlib.Path(pack).name} sha256 {sha256(pathlib.Path(pack).read_bytes())}')
         with tarfile.open(pack) as archive:
             member = next(m for m in archive.getmembers() if m.name.endswith('-words.txt'))
-            for raw in archive.extractfile(member):
-                parts = raw.decode('utf-8', 'replace').rstrip('\n').split('\t')
+            raw_member = archive.extractfile(member).read()
+            manifest.append(f'  member {member.name} sha256 {sha256(raw_member)}')
+            for raw in raw_member.splitlines():
+                parts = raw.decode('utf-8', 'replace').rstrip('\r').split('\t')
                 if len(parts) < 3 or not parts[-1].isdigit():
                     continue
                 word = parts[1]
@@ -56,7 +64,9 @@ def main(output, limit, packs):
                 if WORD.match(word):
                     counts[word.replace('ё', 'е')] += int(parts[-1])
         print(f'{pack}: {len(counts)} distinct lowercase forms so far', flush=True)
-    bloom = Bloom(ROOT / 'src/KeySwitch.Core/ru-forms.bloom')
+    bloom_path = ROOT / 'src/KeySwitch.Core/ru-forms.bloom'
+    manifest.append(f'filter {bloom_path.name} sha256 {sha256(bloom_path.read_bytes())}')
+    bloom = Bloom(bloom_path)
     kept, seen = [], []
     for word, count in counts.most_common():
         if word in bloom:
@@ -67,6 +77,9 @@ def main(output, limit, packs):
     for path, words in ((pathlib.Path(output), kept), (pathlib.Path(output.replace('.txt', '-seen.txt')), sorted(seen))):
         path.write_text('\n'.join(words) + '\n', encoding='utf-8')
         print(f'{path}: {len(words)} forms, {path.stat().st_size} bytes', flush=True)
+        manifest.append(f'output {path.name} forms {len(words)} sha256 {sha256(path.read_bytes())}')
+    manifest_path = pathlib.Path(output.replace('.txt', '.manifest.txt'))
+    manifest_path.write_text('\n'.join(manifest) + '\n', encoding='utf-8')
 
 
 if __name__ == '__main__':
