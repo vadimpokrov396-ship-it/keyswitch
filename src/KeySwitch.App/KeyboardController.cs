@@ -31,6 +31,8 @@ internal sealed class KeyboardController : IDisposable
     private bool suppressToken;
     private readonly HashSet<Keys> swallowedUp = new();
     private long lastUipiWarning;
+    private uint cachedPid;
+    private string cachedProcess = "";
     internal IntPtr SelfTestFocus { get; set; }
     internal bool Suspended { get => suspended; set { suspended = value; Reset(); } }
     internal long InputRevision => Interlocked.Read(ref inputRevision);
@@ -97,7 +99,13 @@ internal sealed class KeyboardController : IDisposable
                     FocusGuard.TryGetSnapshot(out var snapshot);
                     IntPtr layout = snapshot.Thread == 0 ? IntPtr.Zero : Native.GetKeyboardLayout(snapshot.Thread);
                     if (up && swallowedUp.Remove(vk)) suppress = true;
-                    if (shiftKey)
+                    if (IsExcludedProcess(snapshot.Window))
+                    {
+                        // Excluded apps (e.g. mstsc.exe) get every key untouched, hotkeys and Enter/Tab
+                        // included, so a KeySwitch running inside the remote session receives them.
+                        if (down) Post(Reset);
+                    }
+                    else if (shiftKey)
                     {
                         bool gesture = shiftTaps.Update((int)vk, down, Environment.TickCount64, control || alt || win);
                         if (gesture && settings.DoubleShiftEnabled)
@@ -227,7 +235,7 @@ internal sealed class KeyboardController : IDisposable
         if (!result.Changed) { if (deferredKey is Keys key && guard.IsSame(target)) Native.Press((ushort)key); return; }
         string? identity = await (probe ?? guard.GetSafeIdentityAsync(target));
         string? currentIdentity = identity is null ? null : await guard.GetSafeIdentityAsync(target, 60);
-        if (identity is null || currentIdentity != identity || !guard.IsSame(target) || InputRevision != revision)
+        if (!SameIdentity(identity, currentIdentity) || !guard.IsSame(target) || InputRevision != revision)
         {
             boundary.Reset();
             if (deferredKey is Keys key && guard.IsSame(target)) Native.Press((ushort)key);
@@ -250,14 +258,14 @@ internal sealed class KeyboardController : IDisposable
         if (lastConversion is { } prior && Same(prior.Target, target))
         {
             string? undoIdentity = await guard.GetSafeIdentityAsync(target);
-            if (undoIdentity == prior.Identity && guard.IsSame(target) && InputRevision == revision) Undo(prior);
+            if (SameIdentity(prior.Identity, undoIdentity) && guard.IsSame(target) && InputRevision == revision) Undo(prior);
             return;
         }
         bool trailingSpace = word.Length == 0 && lastWord is not null && Same(lastWordTarget, target);
         Task<string?>? sourceProbe = trailingSpace ? lastWordProbe : wordProbe;
         string? sourceIdentity = sourceProbe is null ? null : await sourceProbe;
         string? identity = await guard.GetSafeIdentityAsync(target);
-        if (identity is null || sourceIdentity != identity || !guard.IsSame(target) || InputRevision != revision) return;
+        if (identity is null || !SameIdentity(sourceIdentity, identity) || !guard.IsSame(target) || InputRevision != revision) return;
         string original = trailingSpace ? lastWord! : word.ToString();
         if (original.Length is 0 or > 80) return;
         string converted = LayoutMap.Convert(original);
@@ -286,7 +294,7 @@ internal sealed class KeyboardController : IDisposable
     {
         // Physical Backspace already removed the suffix; restore the original and suffix.
         string? identity = await guard.GetSafeIdentityAsync(conversion.Target);
-        if (identity != conversion.Identity || !guard.IsSame(conversion.Target) || InputRevision != revision) return;
+        if (!SameIdentity(conversion.Identity, identity) || !guard.IsSame(conversion.Target) || InputRevision != revision) return;
         await Task.Delay(12);
         if (!guard.IsSame(conversion.Target) || InputRevision != revision) return;
         var sent = Native.Replace(conversion.Converted.Length + conversion.Suffix.Length - 1, conversion.Original + conversion.Suffix);
@@ -362,7 +370,30 @@ internal sealed class KeyboardController : IDisposable
         vk is >= Keys.A and <= Keys.Z or >= Keys.D0 and <= Keys.D9 or >= Keys.NumPad0 and <= Keys.Divide
             or >= Keys.OemSemicolon and <= Keys.Oemtilde or >= Keys.OemOpenBrackets and <= Keys.OemBackslash
             ? "text" : ((int)vk).ToString();
+    // Called from the hook: resolve the process name only when the foreground process changes.
+    private bool IsExcludedProcess(IntPtr window)
+    {
+        if (window == IntPtr.Zero) return false;
+        Native.GetWindowThreadProcessId(window, out uint pid);
+        if (pid != cachedPid)
+        {
+            try { using var process = Process.GetProcessById((int)pid); cachedProcess = process.ProcessName + ".exe"; }
+            catch { cachedProcess = ""; }
+            cachedPid = pid;
+        }
+        return cachedProcess.Length > 0 &&
+            settings.ExcludedProcesses.Any(x => x.Trim().Equals(cachedProcess, StringComparison.OrdinalIgnoreCase));
+    }
     private static bool Down(Keys key) => (Native.GetAsyncKeyState((int)key) & 0x8000) != 0;
+    // Identities are "window:focus:uiaRuntimeId". A timed-out UIA probe (typically the cold first one) has an
+    // empty runtime id; it then matches any identity of the same window and focus, as timed-out probes fail open.
+    private static bool SameIdentity(string? earlier, string? current)
+    {
+        if (earlier is null || current is null) return false;
+        if (earlier == current) return true;
+        if (earlier.EndsWith(':')) return current.StartsWith(earlier, StringComparison.Ordinal);
+        return current.EndsWith(':') && earlier.StartsWith(current, StringComparison.Ordinal);
+    }
     private static bool Same(FocusTarget a, FocusTarget b) => a.Window != IntPtr.Zero && a.Window == b.Window && a.Focus == b.Focus;
     private static bool IsRussian(string value) => value.Any(c => c is >= 'А' and <= 'я' or 'ё' or 'Ё');
     private static bool IsNavigation(Keys key) => key is Keys.Left or Keys.Right or Keys.Up or Keys.Down or Keys.Home or Keys.End or Keys.Delete or Keys.Escape or Keys.PageDown or Keys.PageUp or Keys.Insert;
