@@ -110,6 +110,13 @@ jobs:
                   if name == "variants": continue
                   print(f"| {part} | {name} | {r['Typos']} | {r['Corrected']} | {r['WrongCorrections']} | {r['FalseCorrections']} "
                         f"| {r['ChangePrecision']:.2%} | {r['Recall']:.2%} | {r['FalseCorrectionRate']:.3%} |")
+          if "test" in parts:
+              manual = json.load(open("eval/test.report.json"))["total"]["ManualSweep"]
+              print("\n### Pause suggestions on the test split\n")
+              print("| threshold | right among suggestions | typos fixed |")
+              print("|---:|---:|---:|")
+              for t, r in manual.items():
+                  print(f"| {t} | {r['Accuracy']:.2%} | {r['Coverage']:.2%} |")
           print("\n### Auto-correction confidence threshold sweep (dev)\n")
           print("| threshold | precision | recall | false rate |")
           print("|---:|---:|---:|---:|")
