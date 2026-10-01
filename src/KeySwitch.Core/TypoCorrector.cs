@@ -410,7 +410,14 @@ public sealed record TypoPolicy(double MinMargin, double RussianMinMargin, int R
     int RussianMinLength, bool IgnoreRussianSwitch, int RussianDistance2MinLength, string Reason)
 {
     /// <summary>Automatic correction at a word boundary.</summary>
-    public static TypoPolicy Auto => new(2.2, TypoCorrector.RussianMargin, TypoCorrector.RussianRankCap, 12000, 5, false, int.MaxValue, "typo-autocorrect");
+    /// <remarks>Word-pair context (dev, TypoEval --pairs): candidate weight 0.5 (lead 4.0: 89.74% precision / 20.44% recall vs
+    /// 89.26% / 19.43% without) and тся/ться real-word fixes after a typical previous word (pairs >= 20, lead >= 3:
+    /// 4 right, 0 changed correct words). Other real-word confusions (стаей/статей) changed far more correct words
+    /// than typos on dev (at best 32% right), so they stay off; ете/ите did not occur on dev and stays off too.</remarks>
+    public static TypoPolicy Auto => new(2.2, TypoCorrector.RussianMargin, TypoCorrector.RussianRankCap, 12000, 5, false, int.MaxValue, "typo-autocorrect")
+    {
+        ContextWeight = 0.5, RealWordMargin = 3, RealWordMinPairs = 20, RealWordKinds = RealWordKinds.Tsya,
+    };
     /// <summary>Pause / double Shift on a word: works with Russian auto-correction off, lower bar, whole form list
     /// (dev: rank cap 200k beats 50k on both accuracy and coverage). Two edits stay off in both modes: on the dev
     /// set they lowered precision at every threshold, also for 8+ letter words.</summary>

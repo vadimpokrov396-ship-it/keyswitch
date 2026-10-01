@@ -26,6 +26,7 @@ static class PairEval
             new("auto rank<=100k", autoSweep with { RussianRankCap = 100000 }, false),
             new("auto rank<=200k", autoSweep with { RussianRankCap = 200000 }, false),
             new("auto rank<=50k +2 edits for 8+ letters", autoSweep with { RussianDistance2MinLength = 8 }, false),
+            new("auto without word pairs (1.3.0)", autoSweep with { ContextWeight = 0, RealWordMargin = double.PositiveInfinity }, false),
             new("auto word-pair context x0.5", autoSweep with { ContextWeight = 0.5 }, false),
             new("auto word-pair context x1", autoSweep with { ContextWeight = 1 }, false),
             new("auto word-pair context x2", autoSweep with { ContextWeight = 2 }, false),
