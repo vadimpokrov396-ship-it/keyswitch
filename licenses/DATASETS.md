@@ -73,6 +73,16 @@ Used only by Russian typo correction (candidates and protected words); the layou
 - Licence: the lists are derived from CC BY Leipzig data. Because the selection uses the OpenCorpora-derived filter (CC BY-SA 3.0), they are conservatively distributed under **CC BY-SA 3.0** as well, like `ru-forms.bloom`, with the attributions above.
 - Rebuild: GitHub Actions → CI → Run workflow → task `build-ru-dictionary`.
 
+## Russian word-pair counts (`data/ru-pairs.bin`)
+
+Used only by Russian typo correction (how typical a candidate is after the previous word; тся/ться after a typical previous word); the layout model is unchanged.
+
+- Source: the `*-sentences.txt` members of the same two pinned Leipzig packs as above (**CC BY**; attribution: Leipzig Corpora Collection, University of Leipzig — Russian news corpus 2020 and Russian Wikipedia corpus 2021), verified by the same pack SHA-256 values.
+- Transformation (`tools/build_ru_pairs.py`): sentences lowercased, `ё` written as `е`, split into letter tokens; counts of adjacent token pairs within a sentence where the first token is one of the 16,383 most frequent Cyrillic tokens and the second is a form of `ru-typo.txt` (identified by its line number). Pairs seen at least 3 times are kept (781,083), with log-quantized counts and the quantized corpus counts of the forms and context words. No sentences or longer sequences are included.
+- Bundled file SHA-256: `ru-pairs.bin` `9def1d09d8dd9f8fe7e9e7c7050b47bb31f7b151365af7e95a8e0e426879c20f` (see also `data/ru-pairs.manifest.txt`). It is only used with the `ru-typo.txt` it was built for (checked by FNV-1a hash at load time).
+- Licence: derived from CC BY Leipzig data and keyed to `ru-typo.txt`, so it is conservatively distributed under **CC BY-SA 3.0** like that list, with the attributions above.
+- Rebuild: the same `build-ru-dictionary` task.
+
 ## Colloquial Russian (`data/ru-colloquial.txt`)
 
 About 70 colloquial / chat spellings (ваще, щас, чё, норм, спс, ...) that typo correction must never "fix", curated for KeySwitch in 2026 and licensed under the project MIT licence. Not derived from any corpus.
