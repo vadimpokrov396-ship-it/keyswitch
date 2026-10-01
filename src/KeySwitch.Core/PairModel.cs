@@ -58,12 +58,17 @@ internal sealed class PairModel
 
     private static double Decode(byte q) => q == 0 ? 0 : Math.Pow(2, (q - 1) / 10.0);
 
+    /// <summary>FNV-1a 64 of the list as built (UTF-8 lines ending in \n), whatever line endings the checkout
+    /// uses (git may turn them into \r\n on Windows).</summary>
     private static ulong Fnv64(Stream stream)
     {
         ulong h = 14695981039346656037;
-        int b;
-        var buffered = new BufferedStream(stream);
-        while ((b = buffered.ReadByte()) >= 0) h = (h ^ (byte)b) * 1099511628211UL;
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        while (reader.ReadLine() is { } line)
+        {
+            foreach (byte b in Encoding.UTF8.GetBytes(line)) h = (h ^ b) * 1099511628211UL;
+            h = (h ^ (byte)'\n') * 1099511628211UL;
+        }
         return h;
     }
 
