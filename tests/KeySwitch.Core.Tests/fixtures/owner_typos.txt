@@ -1,9 +1,11 @@
 # owner_typos: real typos from the owner's own messages. One per line: опечатка → правильно
-# ("->" or a tab also work). Lines starting with # are comments.
+# ("->" or a tab also work). Lines starting with # are comments. Words before the typo may be added
+# as context, on both sides: много стаей → много статей
 засвтра → завтра
 поаправь → поправь
 кчати → кстати
 стаей → статей
+много стаей → много статей
 мыжно → можно
 пенктуации → пунктуации
 транскридации → транскрибации

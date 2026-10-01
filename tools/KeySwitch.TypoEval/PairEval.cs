@@ -26,6 +26,12 @@ static class PairEval
             new("auto rank<=100k", autoSweep with { RussianRankCap = 100000 }, false),
             new("auto rank<=200k", autoSweep with { RussianRankCap = 200000 }, false),
             new("auto rank<=50k +2 edits for 8+ letters", autoSweep with { RussianDistance2MinLength = 8 }, false),
+            new("auto word-pair context x0.5", autoSweep with { ContextWeight = 0.5 }, false),
+            new("auto word-pair context x1", autoSweep with { ContextWeight = 1 }, false),
+            new("auto word-pair context x2", autoSweep with { ContextWeight = 2 }, false),
+            new("auto pair veto lift<-2", autoSweep with { ContextVeto = -2 }, false),
+            new("auto pair veto lift<-3", autoSweep with { ContextVeto = -3 }, false),
+            new("auto context x1 + veto lift<-2", autoSweep with { ContextWeight = 1, ContextVeto = -2 }, false),
             new("manual rank<=50k", manualSweep with { RussianRankCap = 50000 }, true),
             new("manual rank<=200k", manualSweep with { RussianRankCap = 200000 }, true),
             new("manual rank<=200k +2 edits for 8+ letters", manualSweep with { RussianRankCap = 200000, RussianDistance2MinLength = 8 }, true),
@@ -46,10 +52,18 @@ static class PairEval
         }
         report["total"] = total.Summary();
         report["variants"] = variants.ToDictionary(v => v.Name, v => v.Summary(total.Typos, total.CleanWords));
+        // Real-word errors decided by the previous word, per minimum pair count, confusion kind and margin.
+        report["realword"] = new
+        {
+            PairContext = TypoCorrector.HasPairContext,
+            Probes = RealWordProbes.ToDictionary(p => $"pairs>={p.MinPairs}", p => p.Summary(total.Typos, total.CleanWords)),
+        };
         var json = JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
         File.WriteAllText(output, json);
         Console.WriteLine(json);
     }
+
+    private static readonly RealWordProbe[] RealWordProbes = [new(3), new(20), new(100)];
 
     private static void Evaluate(TypoCorrector corrector, string source, string correction, PairCounts counts, List<Variant> variants)
     {
@@ -81,7 +95,27 @@ static class PairEval
                     else if (Normalize(decision.Corrected) == Normalize(expected)) { counts.Corrected++; bucket[0]++; }
                     else { counts.WrongCorrections++; bucket[1]++; counts.AddExample(counts.WrongExamples, $"{word} -> {decision.Corrected} (expected {expected})"); }
                 }
-                else if (!clean && !ignored) counts.AddExample(counts.MissExamples, $"{word} -> {expected} ({decision.Reason})");
+                else if (!clean && !ignored)
+                {
+                    counts.AddExample(counts.MissExamples, $"{word} -> {expected} ({decision.Reason})");
+                    counts.MissReasons[decision.Reason] = counts.MissReasons.GetValueOrDefault(decision.Reason) + 1;
+                    if (decision.Reason == "known-original")
+                    {
+                        string kind = TypoCorrector.Confusion(word, expected).ToString();
+                        counts.RealWordTypos[kind] = counts.RealWordTypos.GetValueOrDefault(kind) + 1;
+                        if (kind != "None") counts.AddExample(counts.RealWordExamples, $"{previous} {word} -> {expected} ({kind})");
+                    }
+                }
+                if (!ignored && decision.Reason == "known-original")
+                    foreach (var probe in RealWordProbes)
+                    {
+                        var result = corrector.Evaluate(word, previous, previous2, null, probe.Policy);
+                        if (!result.ShouldCorrect) continue;
+                        int outcome = clean ? 2 : Normalize(result.Corrected) == Normalize(expected) ? 0 : 1;
+                        probe.Changes.Add((result.Reason[(result.Reason.LastIndexOf('-') + 1)..], result.Confidence, outcome));
+                        if (probe.Examples.Count < 60 && outcome != 0)
+                            probe.Examples.Add($"{previous} {word} -> {result.Corrected} ({(clean ? "was right" : "expected " + expected)}, {result.Confidence:0.0})");
+                    }
                 // Manual mode (Pause on a misspelled word, no context): would the suggestion be the intended word?
                 if (!clean && !ignored && corrector.Suggest(word, null, null, null, TypoPolicy.Manual with { MinMargin = 0, RussianMinMargin = 0 }) is { ShouldCorrect: true } suggestion)
                     counts.Suggestions.Add((suggestion.Confidence, Normalize(suggestion.Corrected) == Normalize(expected)));
@@ -145,7 +179,9 @@ static class PairEval
 sealed class PairCounts
 {
     public int Sentences, UnalignedWords, CleanWords, IgnoredEdits, Typos, Corrected, WrongCorrections, FalseCorrections;
-    public List<string> FalseExamples = new(), WrongExamples = new(), MissExamples = new();
+    public List<string> FalseExamples = new(), WrongExamples = new(), MissExamples = new(), RealWordExamples = new();
+    // Why real typos were left unchanged, and how typos that are real words relate to the intended word.
+    public SortedDictionary<string, int> MissReasons = new(StringComparer.Ordinal), RealWordTypos = new(StringComparer.Ordinal);
     // Manual suggestions for real typos: (confidence, suggestion == intended word).
     public List<(double Confidence, bool Right)> Suggestions = new();
     // Every automatic change: (confidence, outcome 0 = corrected, 1 = wrong, 2 = false on clean).
@@ -160,6 +196,9 @@ sealed class PairCounts
         IgnoredEdits += other.IgnoredEdits; Typos += other.Typos; Corrected += other.Corrected;
         WrongCorrections += other.WrongCorrections; FalseCorrections += other.FalseCorrections;
         Changes.AddRange(other.Changes);
+        foreach (var (k, v) in other.MissReasons) MissReasons[k] = MissReasons.GetValueOrDefault(k) + v;
+        foreach (var (k, v) in other.RealWordTypos) RealWordTypos[k] = RealWordTypos.GetValueOrDefault(k) + v;
+        foreach (var example in other.RealWordExamples) AddExample(RealWordExamples, example);
         Suggestions.AddRange(other.Suggestions);
         foreach (var (distance, values) in other.ByDistance) { var b = Bucket(distance); for (int i = 0; i < 3; i++) b[i] += values[i]; }
     }
@@ -188,7 +227,7 @@ sealed class PairCounts
                 return new { Accuracy = Math.Round((double)right / Math.Max(1, right + wrong), 4), Coverage = Math.Round((double)right / Math.Max(1, Typos), 4) };
             }),
             ByDistance = ByDistance.ToDictionary(x => x.Key.ToString(), x => new { Corrected = x.Value[0], Wrong = x.Value[1], FalseOnClean = x.Value[2] }),
-            FalseExamples, WrongExamples, MissExamples,
+            FalseExamples, WrongExamples, MissExamples, MissReasons, RealWordTypos, RealWordExamples,
         };
     }
 }
@@ -211,4 +250,32 @@ sealed record Variant(string Name, TypoPolicy Policy, bool Manual)
                     FalseRate = Math.Round((double)falseOnClean / Math.Max(1, cleanWords), 5),
                 };
             });
+}
+
+/// <summary>Real-word corrections with every confusion kind and no margin, so the summary can show each kind and
+/// threshold; only words the shipped auto mode keeps as known are probed.</summary>
+sealed class RealWordProbe(double minPairs)
+{
+    public double MinPairs { get; } = minPairs;
+    public TypoPolicy Policy { get; } = TypoPolicy.Auto with
+    {
+        RealWordMargin = 0, RealWordMinPairs = minPairs,
+        RealWordKinds = RealWordKinds.Tsya | RealWordKinds.SecondPlural | RealWordKinds.OtherEdit,
+    };
+    // (kind, margin, outcome 0 = intended word, 1 = wrong word, 2 = changed a correct word)
+    public List<(string Kind, double Margin, int Outcome)> Changes { get; } = new();
+    public List<string> Examples { get; } = new();
+    public object Summary(int typos, int cleanWords) => new
+    {
+        ByKind = Changes.Select(c => c.Kind).Distinct().OrderBy(k => k).ToDictionary(k => k, k =>
+            new[] { 1.0, 2.0, 3.0, 4.0, 5.0, 6.0 }.ToDictionary(t => t.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture), t =>
+            {
+                var selected = Changes.Where(c => c.Kind == k && c.Margin >= t).ToList();
+                int right = selected.Count(c => c.Outcome == 0), wrong = selected.Count(c => c.Outcome == 1), falseOnClean = selected.Count(c => c.Outcome == 2);
+                return new { Right = right, Wrong = wrong, FalseOnClean = falseOnClean,
+                    Precision = Math.Round((double)right / Math.Max(1, right + wrong + falseOnClean), 4),
+                    FalseRate = Math.Round((double)falseOnClean / Math.Max(1, cleanWords), 5) };
+            })),
+        Examples,
+    };
 }

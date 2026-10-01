@@ -97,6 +97,10 @@ public sealed class TypoCorrector
         return words;
     });
     public static bool IsColloquial(string word) => RussianColloquial.Value.Contains(Plain(word.ToLowerInvariant()));
+    // Adjacent word pair counts (data/ru-pairs.bin), only valid together with the word-form list they were built for.
+    private static readonly Lazy<PairModel?> Pairs = new(() => RussianFormList ? PairModel.Load(Ru.Value.Words.Count) : null);
+    /// <summary>True when the word-pair context table is bundled and matches the bundled form list.</summary>
+    public static bool HasPairContext => Pairs.Value is not null;
     private readonly DecisionEngine layout;
     public TypoCorrector(DecisionEngine? layout = null) => this.layout = layout ?? new DecisionEngine();
 
@@ -136,7 +140,8 @@ public sealed class TypoCorrector
         if (russian && !RussianEnabled && !policy.IgnoreRussianSwitch) return Keep("ru-typo-disabled");
         // Four-letter Russian words have too many real neighbours (таку -> так, блан -> план) to change safely.
         if (russian && word.Length < policy.RussianMinLength) return Keep("protected-shape");
-        if (layout.IsKnownWord(word, russian)) return Keep("known-original");
+        if (layout.IsKnownWord(word, russian))
+            return russian && RealWord(word, previous, policy) is { } realWord ? realWord : Keep("known-original");
         if (russian && RussianSeen.Value.Contains(Plain(word.ToLowerInvariant()))) return Keep("known-corpus");
         if (russian && IsColloquial(word)) return Keep("colloquial");
         var data = russian ? Ru.Value : En.Value;
@@ -173,7 +178,7 @@ public sealed class TypoCorrector
             // A second English edit requires a common destination and a plausible word shape.
             if (!russian && distance == 2 && (entry.Rank > 10000 || lower.Length < 8)) continue;
             double cost = distance == 2 ? 3.2 : EditCost(Plain(lower), plain, russian);
-            scored.Add((entry, Score(data, entry.Word, entry.Rank, cost, previous, previous2, russian), cost));
+            scored.Add((entry, Score(data, entry.Word, entry.Rank, cost, previous, previous2, russian, policy), cost));
         }
         if (scored.Count == 0) return Keep("no-candidate");
         scored.Sort((a, b) => b.Score.CompareTo(a.Score));
@@ -186,21 +191,74 @@ public sealed class TypoCorrector
         // The ranked list holds only frequent words. A real form from the full lexicon (OpenCorpora for RU) one edit
         // away is scored as if it were just below the ranked list (its true frequency can only be lower); if it
         // comes within the margin of the best candidate, the intended word is unclear.
-        if (russian && BestUnrankedRival(lower, data, best.Entry.Word, previous, previous2) is double rival)
+        if (russian && BestUnrankedRival(lower, data, best.Entry.Word, previous, previous2, policy) is double rival)
         {
             if (best.Score - rival < required) return Keep("ambiguous-form");
             margin = Math.Min(margin, best.Score - rival);
         }
         if (russian && margin < policy.RussianMinMargin) return Keep("ambiguous-candidate");
+        // The corpus has seen the previous word often enough to expect the candidate after it, yet never did.
+        if (russian && Pairs.Value is { } pairs && pairs.Lift(previous, best.Entry.Rank) < policy.ContextVeto) return Keep("context-mismatch");
         return new(true, word, best.Entry.Word, margin, policy.Reason);
     }
 
-    private double Score(LanguageData data, string candidate, int rank, double cost, string? previous, string? previous2, bool russian)
+    /// <summary>A real word typed instead of another one (стаей for статей, учится for учиться, напишите for
+    /// напишете), decided by the previous word: a ranked form one edit away must follow that word in the corpus at
+    /// least <see cref="TypoPolicy.RealWordMinPairs"/> times and e^<see cref="TypoPolicy.RealWordMargin"/> times as
+    /// often as the typed word and as every other such form. Only the confusion kinds the policy names are used.</summary>
+    private TypoDecision? RealWord(string word, string? previous, TypoPolicy policy)
+    {
+        if (double.IsPositiveInfinity(policy.RealWordMargin) || policy.RealWordKinds == RealWordKinds.None ||
+            word.Length < policy.RussianMinLength || Pairs.Value is not { } pairs || pairs.PreviousCount(previous) is null) return null;
+        var data = Ru.Value;
+        string lower = word.ToLowerInvariant();
+        int typedRank = data.Find(lower)?.Rank ?? 0;
+        double typedPairs = pairs.PairCount(previous, typedRank), typedCount = pairs.FormCount(typedRank);
+        Entry? best = null;
+        double bestPairs = 0, secondPairs = 0;
+        RealWordKinds bestKind = RealWordKinds.None;
+        foreach (var edit in SingleEdits(Plain(lower), RussianLetters))
+        {
+            if (data.Find(edit) is not { } entry || entry.Rank > policy.RussianRankCap || entry.Rank == typedRank) continue;
+            var kind = Confusion(lower, entry.Word);
+            if ((kind & policy.RealWordKinds) == 0) continue;
+            // Any other one-letter confusion only towards a much more frequent word (стаей -> статей).
+            if (kind == RealWordKinds.OtherEdit && pairs.FormCount(entry.Rank) < 10 * typedCount) continue;
+            double count = pairs.PairCount(previous, entry.Rank);
+            if (count > bestPairs) { secondPairs = bestPairs; bestPairs = count; best = entry; bestKind = kind; }
+            else secondPairs = Math.Max(secondPairs, count);
+        }
+        if (best is null || bestPairs < policy.RealWordMinPairs) return null;
+        double margin = Math.Log((bestPairs + 0.5) / (Math.Max(typedPairs, secondPairs) + 0.5));
+        if (margin < policy.RealWordMargin) return null;
+        return new(true, word, best.Word, margin, policy.Reason + "-context-" + bestKind switch
+        {
+            RealWordKinds.Tsya => "tsya", RealWordKinds.SecondPlural => "2pl", _ => "edit",
+        });
+    }
+
+    /// <summary>How two Russian words one edit apart are confused: тся/ться, the 2nd person plural ете/ите
+    /// (напишете/напишите), or any other single edit; <see cref="RealWordKinds.None"/> otherwise.</summary>
+    public static RealWordKinds Confusion(string typed, string intended)
+    {
+        string a = Plain(typed.ToLowerInvariant()), b = Plain(intended.ToLowerInvariant());
+        if (a == b || EditDistance(a, b, 1) != 1) return RealWordKinds.None;
+        static bool Tsya(string x, string y) => x.EndsWith("тся", StringComparison.Ordinal) && y.EndsWith("ться", StringComparison.Ordinal) && x[..^3] == y[..^4];
+        if (Tsya(a, b) || Tsya(b, a)) return RealWordKinds.Tsya;
+        if (a.Length == b.Length && a.Length > 4 && a[..^3] == b[..^3] && a.EndsWith("те", StringComparison.Ordinal) && b.EndsWith("те", StringComparison.Ordinal) &&
+            (a[^3], b[^3]) is ('е', 'и') or ('и', 'е'))
+            return RealWordKinds.SecondPlural;
+        return RealWordKinds.OtherEdit;
+    }
+
+    private double Score(LanguageData data, string candidate, int rank, double cost, string? previous, string? previous2, bool russian, TypoPolicy policy)
     {
         double frequency = -Math.Log(rank + 15);
         double language = data.LanguageScore(candidate);
         double modelLanguage = Math.Log(Math.Max(1e-6, layout.LanguageProbability(candidate, previous, previous2)));
         double context = ContextScore(previous, previous2, russian);
+        // Word-pair context: how typical the candidate is after the previous word (unranked forms: neutral).
+        if (russian && policy.ContextWeight != 0 && Pairs.Value is { } pairs) context += policy.ContextWeight * pairs.Lift(previous, rank);
         return frequency - 1.5 * cost + 0.65 * language + 0.3 * modelLanguage + context;
     }
 
@@ -210,13 +268,13 @@ public sealed class TypoCorrector
     internal static double RussianMargin => RussianFormList ? 4.0 : 2.2;
     private const string RussianLetters = "абвгдежзийклмнопрстуфхцчшщъыьэюя";
 
-    private double? BestUnrankedRival(string lower, LanguageData data, string chosen, string? previous, string? previous2)
+    private double? BestUnrankedRival(string lower, LanguageData data, string chosen, string? previous, string? previous2, TypoPolicy policy)
     {
         double? best = null;
         foreach (string form in SingleEdits(lower, RussianLetters))
         {
             if (form == Plain(chosen) || form.Length < 2 || data.Ranked(form) || !layout.IsKnownWord(form, true)) continue;
-            double score = Score(data, form, data.Words.Count + 1, EditCost(lower, form, true), previous, previous2, true);
+            double score = Score(data, form, data.Words.Count + 1, EditCost(lower, form, true), previous, previous2, true, policy);
             if (best is null || score > best) best = score;
         }
         return best;
@@ -357,4 +415,28 @@ public sealed record TypoPolicy(double MinMargin, double RussianMinMargin, int R
     /// (dev: rank cap 200k beats 50k on both accuracy and coverage). Two edits stay off in both modes: on the dev
     /// set they lowered precision at every threshold, also for 8+ letter words.</summary>
     public static TypoPolicy Manual => new(TypoCorrector.ManualMargin, TypoCorrector.ManualMargin, 200000, 12000, 4, true, int.MaxValue, "typo-manual");
+
+    /// <summary>Weight of the word-pair lift (data/ru-pairs.bin) in the Russian candidate score; 0 = off.</summary>
+    public double ContextWeight { get; init; }
+    /// <summary>Keep the word when the best candidate's word-pair lift after the previous word is below this.</summary>
+    public double ContextVeto { get; init; } = double.NegativeInfinity;
+    /// <summary>Real-word errors (a known word typed instead of another): minimum log ratio of pair counts;
+    /// infinity = off.</summary>
+    public double RealWordMargin { get; init; } = double.PositiveInfinity;
+    /// <summary>Real-word errors: minimum corpus count of (previous word, intended word).</summary>
+    public double RealWordMinPairs { get; init; } = 20;
+    /// <summary>Real-word errors: which confusions are corrected.</summary>
+    public RealWordKinds RealWordKinds { get; init; } = RealWordKinds.Tsya | RealWordKinds.SecondPlural;
+}
+
+[Flags]
+public enum RealWordKinds
+{
+    None = 0,
+    /// <summary>учится / учиться</summary>
+    Tsya = 1,
+    /// <summary>напишете / напишите</summary>
+    SecondPlural = 2,
+    /// <summary>Any other single edit towards a much more frequent word (стаей / статей).</summary>
+    OtherEdit = 4,
 }
