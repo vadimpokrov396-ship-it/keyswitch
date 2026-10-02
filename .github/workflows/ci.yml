@@ -84,7 +84,9 @@ jobs:
         run: |
           dotnet build tools/KeySwitch.TypoEval -c Release -v q
           for part in dev $([ "$FINAL_TEST" = true ] && echo test); do
-            dotnet run --no-build --project tools/KeySwitch.TypoEval -c Release -- --pairs eval/$part.report.json $(find eval/$part -name '*.json' | sort) > /dev/null; done
+            # Dev only: also score with the owner's verdicts on changes of gold-kept words (eval/dev_label_review.tsv).
+            review=$([ "$part" = dev ] && [ -f eval/dev_label_review.tsv ] && echo "--review eval/dev_label_review.tsv" || true)
+            dotnet run --no-build --project tools/KeySwitch.TypoEval -c Release -- --pairs eval/$part.report.json $review $(find eval/$part -name '*.json' | sort) > /dev/null; done
       - name: Owner typos (regression set)
         run: |
           dotnet run --no-build --project tools/KeySwitch.TypoEval -c Release -- --owner tests/KeySwitch.Core.Tests/fixtures/owner_typos.txt > eval/owner.md
@@ -125,6 +127,10 @@ jobs:
                   if name in ("variants", "realword"): continue
                   print(f"| {part} | {name} | {r['Typos']} | {r['Corrected']} | {r['WrongCorrections']} | {r['FalseCorrections']} "
                         f"| {r['ChangePrecision']:.2%} | {r['Recall']:.2%} | {r['FalseCorrectionRate']:.3%} |")
+                  if r.get("Reviewed"):
+                      v = r["Reviewed"]
+                      print(f"| {part}, owner-reviewed labels | {name} ({v['Unreviewed']} unreviewed counted as false) | {v['Typos']} | {v['Corrected']} | {v['WrongCorrections']} | {v['FalseCorrections']} "
+                            f"| {v['ChangePrecision']:.2%} | {v['Recall']:.2%} | {v['FalseCorrectionRate']:.3%} |")
           if "test" in parts:
               manual = json.load(open("eval/test.report.json"))["total"]["ManualSweep"]
               print("\n### Pause suggestions on the test split\n")

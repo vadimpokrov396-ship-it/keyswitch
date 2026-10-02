@@ -83,6 +83,10 @@ Used only by Russian typo correction (how typical a candidate is after the previ
 - Licence: derived from CC BY Leipzig data and keyed to `ru-typo.txt`, so it is conservatively distributed under **CC BY-SA 3.0** like that list, with the attributions above.
 - Rebuild: the same `build-ru-dictionary` task.
 
+## Known misspellings (`data/ru-known-misspellings.txt`)
+
+77 common misspellings that `data/ru.txt` / `data/ru-common.txt` contain (and the RU Bloom filter therefore accepts), each with its correct spelling, used only by Russian typo correction (such a word is corrected, and never offered as a correction); the layout model is unchanged. Candidates were found by `tools/find_known_misspellings.py` (words OpenCorpora does not know that one classic error pattern turns into a much more frequent known form) and every entry was reviewed by the project owner (`eval/known_misspellings_review.tsv`; 111 candidates were kept as correct words). The list is derived from the CC BY 2.5 `ru.txt` source above, with the same attribution.
+
 ## Colloquial Russian (`data/ru-colloquial.txt`)
 
 About 70 colloquial / chat spellings (ваще, щас, чё, норм, спс, ...) that typo correction must never "fix", curated for KeySwitch in 2026 and licensed under the project MIT licence. Not derived from any corpus.

@@ -12,10 +12,10 @@ counts only towards the 20,000 most frequent forms and for words missing from ru
 vowel does not count.
 
 Usage: PYTHONPATH=<pymorphy3 libs> find_known_misspellings.py OUTPUT.tsv
+       find_known_misspellings.py --export REVIEWED.tsv data/ru-known-misspellings.txt
+The second form writes the entries the owner marked misspelling / misspelling-other as "ошибка → правильно".
 """
 import pathlib, re, sys
-
-import pymorphy3
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 LETTERS = 'абвгдежзийклмнопрстуфхцчшщъыьэюя'
@@ -72,6 +72,7 @@ def edits(word):
 
 
 def main(output):
+    import pymorphy3
     morph = pymorphy3.MorphAnalyzer()
     internet = {}
     for name in ('ru.txt', 'ru-common.txt'):
@@ -117,7 +118,31 @@ def main(output):
     print(f'{output}: {len(rows)} words', counts)
 
 
+def export(review, output):
+    rows = [line.rstrip('\n').split('\t') for line in open(review, encoding='utf-8') if not line.startswith('#')]
+    head = rows[0]
+    word, proposed, verdict, intended = (head.index(k) for k in ('word', 'proposed', 'verdict', 'intended'))
+    pairs = []
+    for row in rows[1:]:
+        if row[verdict] == 'misspelling':
+            pairs.append((row[word], row[proposed]))
+        elif row[verdict] == 'misspelling-other':
+            assert row[intended], row
+            pairs.append((row[word], row[intended]))
+        else:
+            assert row[verdict] == 'keep', row
+    lines = ['# Частые ошибки из data/ru.txt / ru-common.txt, которые исправляются как опечатки (проверено владельцем:',
+             '# eval/known_misspellings_review.tsv, verdict misspelling / misspelling-other). Формат: ошибка → правильно.',
+             '# Строится: tools/find_known_misspellings.py --export eval/known_misspellings_review.tsv data/ru-known-misspellings.txt']
+    lines += [f'{a} → {b}' for a, b in sorted(pairs)]
+    pathlib.Path(output).write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    print(f'{output}: {len(pairs)} entries')
+
+
 if __name__ == '__main__':
-    if len(sys.argv) != 2:
+    if len(sys.argv) == 4 and sys.argv[1] == '--export':
+        export(sys.argv[2], sys.argv[3])
+    elif len(sys.argv) == 2:
+        main(sys.argv[1])
+    else:
         sys.exit(__doc__)
-    main(sys.argv[1])

@@ -97,6 +97,25 @@ public sealed class TypoCorrector
         return words;
     });
     public static bool IsColloquial(string word) => RussianColloquial.Value.Contains(Plain(word.ToLowerInvariant()));
+    // Owner-reviewed common misspellings that data/ru.txt (inside the RU Bloom filter) makes look like known words
+    // (data/ru-known-misspellings.txt, "ошибка → правильно"): corrected as typos, never offered as a correction.
+    private static readonly Lazy<Dictionary<string, string>> RussianMisspellings = new(() =>
+    {
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("KeySwitch.ru-known-misspellings.txt");
+        if (stream is null) return map;
+        using var reader = new StreamReader(stream);
+        while (reader.ReadLine() is { } line)
+        {
+            if (line.TrimStart().StartsWith('#')) continue;
+            var parts = line.Split('→', 2, StringSplitOptions.TrimEntries);
+            if (parts.Length == 2 && parts[0].Length > 0 && parts[1].Length > 0) map[Plain(parts[0].ToLowerInvariant())] = parts[1].ToLowerInvariant();
+        }
+        return map;
+    });
+    private static bool IsMisspelling(string word) => RussianMisspellings.Value.ContainsKey(Plain(word));
+    /// <summary>Lead reported for a reviewed misspelling: above every shipped threshold.</summary>
+    internal const double MisspellingConfidence = 5.0;
     // Adjacent word pair counts (data/ru-pairs.bin), only valid together with the word-form list they were built for.
     private static readonly Lazy<PairModel?> Pairs = new(() => RussianFormList ? PairModel.Load(Ru.Value.Words.Count) : null);
     /// <summary>True when the word-pair context table is bundled and matches the bundled form list.</summary>
@@ -140,6 +159,8 @@ public sealed class TypoCorrector
         if (russian && !RussianEnabled && !policy.IgnoreRussianSwitch) return Keep("ru-typo-disabled");
         // Four-letter Russian words have too many real neighbours (таку -> так, блан -> план) to change safely.
         if (russian && word.Length < policy.RussianMinLength) return Keep("protected-shape");
+        if (russian && RussianMisspellings.Value.TryGetValue(Plain(word), out var spelled))
+            return new(true, word, spelled, MisspellingConfidence, policy.Reason + "-known-misspelling");
         if (layout.IsKnownWord(word, russian))
             return russian && RealWord(word, previous, policy) is { } realWord ? realWord : Keep("known-original");
         if (russian && RussianSeen.Value.Contains(Plain(word.ToLowerInvariant()))) return Keep("known-corpus");
@@ -151,7 +172,7 @@ public sealed class TypoCorrector
         if (russian)
         {
             foreach (var edit in SingleEdits(lower, RussianLetters))
-                if (data.Find(edit) is { } entry) candidates.Add(entry);
+                if (data.Find(edit) is { } entry && !IsMisspelling(entry.Word)) candidates.Add(entry);
             // Two edits only as a fallback for long words, and only when the policy asks for it: a bounded scan
             // of the ranked forms within two letters of the typed length (early-exit edit distance).
             if (candidates.Count == 0 && lower.Length >= policy.RussianDistance2MinLength)
@@ -160,7 +181,7 @@ public sealed class TypoCorrector
                 string plainTyped = Plain(lower);
                 for (int length = lower.Length - 2; length <= lower.Length + 2; length++)
                     foreach (var entry in data.OfLength(length))
-                        if (EditDistance(plainTyped, Plain(entry.Word), 2) == 2) candidates.Add(entry);
+                        if (EditDistance(plainTyped, Plain(entry.Word), 2) == 2 && !IsMisspelling(entry.Word)) candidates.Add(entry);
             }
         }
         else
@@ -219,7 +240,7 @@ public sealed class TypoCorrector
         RealWordKinds bestKind = RealWordKinds.None;
         foreach (var edit in SingleEdits(Plain(lower), RussianLetters))
         {
-            if (data.Find(edit) is not { } entry || entry.Rank > policy.RussianRankCap || entry.Rank == typedRank) continue;
+            if (data.Find(edit) is not { } entry || entry.Rank > policy.RussianRankCap || entry.Rank == typedRank || IsMisspelling(entry.Word)) continue;
             var kind = Confusion(lower, entry.Word);
             if ((kind & policy.RealWordKinds) == 0) continue;
             // Any other one-letter confusion only towards a much more frequent word (стаей -> статей).
@@ -273,7 +294,7 @@ public sealed class TypoCorrector
         double? best = null;
         foreach (string form in SingleEdits(lower, RussianLetters))
         {
-            if (form == Plain(chosen) || form.Length < 2 || data.Ranked(form) || !layout.IsKnownWord(form, true)) continue;
+            if (form == Plain(chosen) || form.Length < 2 || data.Ranked(form) || IsMisspelling(form) || !layout.IsKnownWord(form, true)) continue;
             double score = Score(data, form, data.Words.Count + 1, EditCost(lower, form, true), previous, previous2, true, policy);
             if (best is null || score > best) best = score;
         }

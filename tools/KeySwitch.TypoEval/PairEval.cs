@@ -8,9 +8,14 @@ static class PairEval
 {
     private static readonly Regex Word = new(@"\p{L}+", RegexOptions.Compiled);
 
-    public static void Run(string output, IEnumerable<string> inputs)
+    // Owner verdicts for changes of words the gold standard kept (eval/dev_label_review.tsv), keyed by
+    // set, context and word: (verdict, what KeySwitch proposed when reviewed, intended word for typo-other).
+    private static Dictionary<string, (string Verdict, string Proposed, string Intended)>? Labels;
+
+    public static void Run(string output, IEnumerable<string> inputs, string? review = null)
     {
         TypoCorrector.RussianEnabled = true;
+        if (review is not null && File.Exists(review)) Labels = LoadLabels(review);
         var corrector = new TypoCorrector(new DecisionEngine());
         var report = new Dictionary<string, object>();
         var total = new PairCounts();
@@ -97,8 +102,10 @@ static class PairEval
                     if (clean)
                     {
                         counts.FalseCorrections++; bucket[2]++; counts.AddExample(counts.FalseExamples, $"{word} -> {decision.Corrected}");
-                        counts.FalseRows.Add(new[] { counts.Name, Context(source, matches[i]), word, decision.Corrected,
+                        string context = Context(source, matches[i]);
+                        counts.FalseRows.Add(new[] { counts.Name, context, word, decision.Corrected,
                             decision.Confidence.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) });
+                        if (Labels is not null) counts.Review(Labels.TryGetValue(Key(counts.Name, context, word), out var label) ? label : null, decision.Corrected);
                     }
                     else if (Normalize(decision.Corrected) == Normalize(expected)) { counts.Corrected++; bucket[0]++; }
                     else { counts.WrongCorrections++; bucket[1]++; counts.AddExample(counts.WrongExamples, $"{word} -> {decision.Corrected} (expected {expected})"); }
@@ -142,7 +149,23 @@ static class PairEval
         }
     }
 
-    private static string Normalize(string word) => word.ToLowerInvariant().Replace('ё', 'е');
+    internal static string Normalize(string word) => word.ToLowerInvariant().Replace('ё', 'е');
+
+    private static string Key(string set, string context, string word) => set + "\t" + context + "\t" + word;
+
+    private static Dictionary<string, (string, string, string)> LoadLabels(string path)
+    {
+        // Spreadsheet tools may quote fields that contain quotes ("…""…""…").
+        static string Unquote(string field) => field.Length >= 2 && field[0] == '"' && field[^1] == '"' ? field[1..^1].Replace("\"\"", "\"") : field;
+        var lines = File.ReadLines(path).Where(l => !l.StartsWith('#') && l.Length > 0).Select(l => l.Split('\t').Select(Unquote).ToArray()).ToList();
+        var head = lines[0].ToList();
+        int set = head.IndexOf("set"), context = head.IndexOf("context"), word = head.IndexOf("gold_word"),
+            proposed = head.IndexOf("keyswitch"), verdict = head.IndexOf("verdict"), intended = head.IndexOf("intended");
+        var labels = new Dictionary<string, (string, string, string)>(StringComparer.Ordinal);
+        foreach (var row in lines.Skip(1))
+            labels[Key(row[set], row[context], row[word])] = (row[verdict].Trim(), row[proposed], intended < row.Length ? row[intended].Trim() : "");
+        return labels;
+    }
 
     /// <summary>The typed sentence with the word marked as [[word]], whitespace collapsed, at most ~120 characters
     /// on each side.</summary>
@@ -214,6 +237,25 @@ sealed class PairCounts
 {
     public int Sentences, UnalignedWords, CleanWords, IgnoredEdits, Typos, Corrected, WrongCorrections, FalseCorrections;
     public string Name = "";
+    // Changes of gold-kept words scored with the owner's verdicts: right, wrong, still a false change; how many such
+    // changes have no verdict yet (counted as false), and how many reviewed words are typos (added to Typos).
+    public int ReviewedRight, ReviewedWrong, ReviewedFalse, Unreviewed, ReviewedTypos;
+    public void Review((string Verdict, string Proposed, string Intended)? label, string corrected)
+    {
+        switch (label?.Verdict)
+        {
+            case "typo":
+                ReviewedTypos++;
+                if (PairEval.Normalize(corrected) == PairEval.Normalize(label.Value.Proposed)) ReviewedRight++; else ReviewedWrong++;
+                break;
+            case "typo-other":
+                ReviewedTypos++;
+                if (PairEval.Normalize(corrected) == PairEval.Normalize(label.Value.Intended)) ReviewedRight++; else ReviewedWrong++;
+                break;
+            case null: Unreviewed++; ReviewedFalse++; break;
+            default: ReviewedFalse++; break;
+        }
+    }
     public List<string> FalseExamples = new(), WrongExamples = new(), MissExamples = new(), RealWordExamples = new();
     // Changes of words the gold standard kept: set, context, word, correction, lead.
     public List<string[]> FalseRows = new();
@@ -234,6 +276,8 @@ sealed class PairCounts
         WrongCorrections += other.WrongCorrections; FalseCorrections += other.FalseCorrections;
         Changes.AddRange(other.Changes);
         FalseRows.AddRange(other.FalseRows);
+        ReviewedRight += other.ReviewedRight; ReviewedWrong += other.ReviewedWrong; ReviewedFalse += other.ReviewedFalse;
+        Unreviewed += other.Unreviewed; ReviewedTypos += other.ReviewedTypos;
         foreach (var (k, v) in other.MissReasons) MissReasons[k] = MissReasons.GetValueOrDefault(k) + v;
         foreach (var (k, v) in other.RealWordTypos) RealWordTypos[k] = RealWordTypos.GetValueOrDefault(k) + v;
         foreach (var example in other.RealWordExamples) AddExample(RealWordExamples, example);
@@ -250,6 +294,15 @@ sealed class PairCounts
             ChangePrecision = Math.Round((double)Corrected / Math.Max(1, changes), 4),
             Recall = Math.Round((double)Corrected / Math.Max(1, Typos), 4),
             FalseCorrectionRate = Math.Round((double)FalseCorrections / Math.Max(1, CleanWords), 5),
+            // The same with the owner's verdicts on changes of gold-kept words (null without a review file).
+            Reviewed = ReviewedRight + ReviewedWrong + ReviewedFalse == 0 ? null : new
+            {
+                Corrected = Corrected + ReviewedRight, WrongCorrections = WrongCorrections + ReviewedWrong, FalseCorrections = ReviewedFalse,
+                Unreviewed, Typos = Typos + ReviewedTypos,
+                ChangePrecision = Math.Round((double)(Corrected + ReviewedRight) / Math.Max(1, changes), 4),
+                Recall = Math.Round((double)(Corrected + ReviewedRight) / Math.Max(1, Typos + ReviewedTypos), 4),
+                FalseCorrectionRate = Math.Round((double)ReviewedFalse / Math.Max(1, CleanWords - ReviewedTypos), 5),
+            },
             // What precision/recall a stricter confidence threshold would give (changes below it are skipped).
             Sweep = new[] { 2.2, 2.6, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0, 7.0 }.ToDictionary(t => t.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture), t =>
             {

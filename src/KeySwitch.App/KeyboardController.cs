@@ -246,7 +246,7 @@ internal sealed class KeyboardController : IDisposable
         if (!sent.Complete) { Reset(); WarnUipi(target, sent); if (deferredKey is Keys key && sent.Untouched && guard.IsSame(target)) Native.Press((ushort)key); return; }
         bool layoutChanged = IsRussian(result.Original) != IsRussian(result.Replacement);
         if (layoutChanged) SwitchLayout(target, result.Replacement);
-        lastConversion = suffix is "\n" or "\t" ? null : new Conversion(result.Original, result.Replacement, suffix, target, identity, result.Reason == "typo-autocorrect", layoutChanged);
+        lastConversion = suffix is "\n" or "\t" ? null : new Conversion(result.Original, result.Replacement, suffix, target, identity, result.Reason.StartsWith("typo-autocorrect", StringComparison.Ordinal), layoutChanged);
         lastWord = null; lastWordProbe = null;
         if (settings.SoundEnabled) SystemSounds.Asterisk.Play();
         StateChanged?.Invoke();
