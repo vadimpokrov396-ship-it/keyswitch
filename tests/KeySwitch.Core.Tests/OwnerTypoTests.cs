@@ -8,7 +8,8 @@ namespace KeySwitch.Core.Tests;
 [Collection(RussianSwitch.Name)]
 public sealed class OwnerTypoTests
 {
-    // Format: "опечатка → правильно" per line ("->" or a tab also work), # starts a comment.
+    // Format: "опечатка → правильно" per line ("->" or a tab also work), # starts a comment. Words before the typo
+    // may be given as context on both sides ("много стаей → много статей"); the last word is the one checked.
     public static IEnumerable<object[]> Pairs() => File.ReadLines(Path.Combine(AppContext.BaseDirectory, "fixtures", "owner_typos.txt"))
         .Where(line => !line.TrimStart().StartsWith('#'))
         .Select(line => line.Split(new[] { "→", "->", "\t" }, 2, StringSplitOptions.TrimEntries))
@@ -28,8 +29,11 @@ public sealed class OwnerTypoTests
         try
         {
             var corrector = new TypoCorrector(new DecisionEngine());
-            foreach (var decision in new[] { corrector.Evaluate(typo), corrector.Suggest(typo) })
-                Assert.True(!decision.ShouldCorrect || decision.Corrected == intended, $"{typo} -> {decision.Corrected}, expected {intended} or no change");
+            var words = typo.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            string word = words[^1], expected = intended.Split(' ', StringSplitOptions.RemoveEmptyEntries)[^1];
+            string? previous = words.Length > 1 ? words[^2] : null, previous2 = words.Length > 2 ? words[^3] : null;
+            foreach (var decision in new[] { corrector.Evaluate(word, previous, previous2), corrector.Suggest(word) })
+                Assert.True(!decision.ShouldCorrect || decision.Corrected == expected, $"{typo} -> {decision.Corrected}, expected {expected} or no change");
         }
         finally { TypoCorrector.RussianEnabled = saved; }
     }

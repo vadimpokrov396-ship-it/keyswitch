@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 <PropertyGroup><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><IsPackable>false</IsPackable><IsTestProject>true</IsTestProject></PropertyGroup>
 <ItemGroup><PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1"/><PackageReference Include="xunit" Version="2.9.2"/><PackageReference Include="xunit.runner.visualstudio" Version="2.8.2"><PrivateAssets>all</PrivateAssets></PackageReference><ProjectReference Include="../../src/KeySwitch.Core/KeySwitch.Core.csproj"/></ItemGroup>
-<ItemGroup><None Include="fixtures/*.txt" CopyToOutputDirectory="PreserveNewest"/></ItemGroup>
+<ItemGroup><None Include="fixtures/*.txt" CopyToOutputDirectory="PreserveNewest"/><None Include="../../data/ru-known-misspellings.txt" Link="fixtures/ru-known-misspellings.txt" CopyToOutputDirectory="PreserveNewest"/></ItemGroup>
 <ItemGroup><Compile Include="../../src/KeySwitch.App/ShiftTapDetector.cs" Link="ShiftTapDetector.cs" /><Compile Include="../../src/KeySwitch.App/GrammarClient.cs" Link="GrammarClient.cs" /></ItemGroup>
 </Project>

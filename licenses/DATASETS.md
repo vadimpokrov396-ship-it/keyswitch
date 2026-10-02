@@ -73,13 +73,27 @@ Used only by Russian typo correction (candidates and protected words); the layou
 - Licence: the lists are derived from CC BY Leipzig data. Because the selection uses the OpenCorpora-derived filter (CC BY-SA 3.0), they are conservatively distributed under **CC BY-SA 3.0** as well, like `ru-forms.bloom`, with the attributions above.
 - Rebuild: GitHub Actions → CI → Run workflow → task `build-ru-dictionary`.
 
+## Russian word-pair counts (`data/ru-pairs.bin`)
+
+Used only by Russian typo correction (how typical a candidate is after the previous word; тся/ться after a typical previous word); the layout model is unchanged.
+
+- Source: the `*-sentences.txt` members of the same two pinned Leipzig packs as above (**CC BY**; attribution: Leipzig Corpora Collection, University of Leipzig — Russian news corpus 2020 and Russian Wikipedia corpus 2021), verified by the same pack SHA-256 values.
+- Transformation (`tools/build_ru_pairs.py`): sentences lowercased, `ё` written as `е`, split into letter tokens; counts of adjacent token pairs within a sentence where the first token is one of the 16,383 most frequent Cyrillic tokens and the second is a form of `ru-typo.txt` (identified by its line number). Pairs seen at least 3 times are kept (781,083), with log-quantized counts and the quantized corpus counts of the forms and context words. No sentences or longer sequences are included.
+- Bundled file SHA-256: `ru-pairs.bin` `9def1d09d8dd9f8fe7e9e7c7050b47bb31f7b151365af7e95a8e0e426879c20f` (see also `data/ru-pairs.manifest.txt`). It is only used with the `ru-typo.txt` it was built for (checked by FNV-1a hash at load time).
+- Licence: derived from CC BY Leipzig data and keyed to `ru-typo.txt`, so it is conservatively distributed under **CC BY-SA 3.0** like that list, with the attributions above.
+- Rebuild: the same `build-ru-dictionary` task.
+
+## Known misspellings (`data/ru-known-misspellings.txt`)
+
+77 common misspellings that `data/ru.txt` / `data/ru-common.txt` contain (and the RU Bloom filter therefore accepts), each with its correct spelling, used only by Russian typo correction (such a word is corrected, and never offered as a correction); the layout model is unchanged. Candidates were found by `tools/find_known_misspellings.py` (words OpenCorpora does not know that one classic error pattern turns into a much more frequent known form) and every entry was reviewed by the project owner (`eval/known_misspellings_review.tsv`; 111 candidates were kept as correct words). The list is derived from the CC BY 2.5 `ru.txt` source above, with the same attribution.
+
 ## Colloquial Russian (`data/ru-colloquial.txt`)
 
 About 70 colloquial / chat spellings (ваще, щас, чё, норм, спс, ...) that typo correction must never "fix", curated for KeySwitch in 2026 and licensed under the project MIT licence. Not derived from any corpus.
 
 ## Typo evaluation data (not distributed)
 
-CI measures Russian typo correction on [`ai-forever/spellcheck_benchmark`](https://huggingface.co/datasets/ai-forever/spellcheck_benchmark) (MIT): the train splits of RUSpellRU and MultidomainGold are the dev set used for all tuning; the test splits of RUSpellRU, MultidomainGold and GitHubTypoCorpusRu are scored only by the manual `typo-final-test` run. The data is downloaded on the CI runner and is neither committed nor bundled.
+CI measures Russian typo correction on [`ai-forever/spellcheck_benchmark`](https://huggingface.co/datasets/ai-forever/spellcheck_benchmark) (MIT): the train splits of RUSpellRU and MultidomainGold are the dev set used for all tuning; the test splits of RUSpellRU, MultidomainGold and GitHubTypoCorpusRu are scored only by the manual `typo-final-test` run. The data is downloaded on the CI runner and is neither committed nor bundled. Exception: `eval/dev_label_review.tsv` (workflow_dispatch task `dev-label-review`) quotes the dev sentences in which KeySwitch changed a word the gold standard kept, for an owner review of the labels; the quotes are redistributed under the dataset's MIT licence (ai-forever/spellcheck_benchmark; Martynov et al., 2023) and are not bundled with the program. `eval/known_misspellings_review.tsv` lists words of `data/ru.txt` / `data/ru-common.txt` that look like common misspellings (built by `tools/find_known_misspellings.py`).
 
 ## Project supplement (`data/ru-common.txt`)
 86 common Russian inflected forms, curated for KeySwitch in 2026 and licensed under the project MIT licence. This separate list fills frequent gaps in the lemma-heavy upstream RU corpus; it is not represented as upstream corpus data.

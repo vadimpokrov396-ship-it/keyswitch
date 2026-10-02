@@ -1,0 +1,82 @@
+using KeySwitch.Core;
+using Xunit;
+
+namespace KeySwitch.Core.Tests;
+
+// TypoCorrector.RussianEnabled is static: tests that switch it must not run in parallel.
+[Collection(RussianSwitch.Name)]
+public sealed class PairContextTests
+{
+    [Theory]
+    [InlineData("учится", "учиться", RealWordKinds.Tsya)]
+    [InlineData("учиться", "учится", RealWordKinds.Tsya)]
+    [InlineData("напишете", "напишите", RealWordKinds.SecondPlural)]
+    [InlineData("сделаите", "сделаете", RealWordKinds.SecondPlural)]
+    [InlineData("стаей", "статей", RealWordKinds.OtherEdit)]
+    [InlineData("Учится", "учиться", RealWordKinds.Tsya)]
+    [InlineData("статей", "статей", RealWordKinds.None)]
+    [InlineData("стаями", "статей", RealWordKinds.None)]
+    public void ConfusionKinds(string typed, string intended, RealWordKinds kind) =>
+        Assert.Equal(kind, TypoCorrector.Confusion(typed, intended));
+
+    [Fact]
+    public void PairTableIsBundled() => Assert.True(TypoCorrector.HasPairContext);
+
+    private static TypoDecision Auto(string word, string? previous)
+    {
+        bool saved = TypoCorrector.RussianEnabled;
+        TypoCorrector.RussianEnabled = true;
+        try { return new TypoCorrector(new DecisionEngine()).Evaluate(word, previous); }
+        finally { TypoCorrector.RussianEnabled = saved; }
+    }
+
+    // тся/ться decided by the previous word.
+    [Theory]
+    [InlineData("мне", "нравиться", "нравится")]
+    [InlineData("он", "находиться", "находится")]
+    [InlineData("может", "вернутся", "вернуться")]
+    [InlineData("чтобы", "убедится", "убедиться")]
+    [InlineData("Мне", "нравиться", "нравится")]
+    public void TsyaFixedByPreviousWord(string previous, string typed, string intended)
+    {
+        var decision = Auto(typed, previous);
+        Assert.True(decision.ShouldCorrect, decision.Reason);
+        Assert.Equal(intended, decision.Corrected);
+        Assert.Equal("typo-autocorrect-context-tsya", decision.Reason);
+    }
+
+    // Correct forms, no or unknown context, and other real-word confusions stay as typed.
+    [Theory]
+    [InlineData("мне", "нравится")]
+    [InlineData("он", "находится")]
+    [InlineData("может", "вернуться")]
+    [InlineData(null, "нравиться")]
+    [InlineData("qwerty", "нравиться")]
+    [InlineData("много", "стаей")]
+    public void KnownWordsKept(string? previous, string typed) => Assert.False(Auto(typed, previous).ShouldCorrect);
+
+    [Fact]
+    public void NotWithRussianAutoCorrectionOff()
+    {
+        bool saved = TypoCorrector.RussianEnabled;
+        TypoCorrector.RussianEnabled = false;
+        try { Assert.False(new TypoCorrector(new DecisionEngine()).Evaluate("нравиться", "мне").ShouldCorrect); }
+        finally { TypoCorrector.RussianEnabled = saved; }
+    }
+
+    [Fact]
+    public void BoundaryEngineUsesThePreviousWord()
+    {
+        bool saved = TypoCorrector.RussianEnabled;
+        TypoCorrector.RussianEnabled = true;
+        try
+        {
+            var boundary = new BoundaryEngine(new DecisionEngine());
+            Assert.False(boundary.Complete("мне", " ").Changed);
+            var result = boundary.Complete("нравиться", " ");
+            Assert.True(result.Changed);
+            Assert.Equal("нравится", result.Replacement);
+        }
+        finally { TypoCorrector.RussianEnabled = saved; }
+    }
+}

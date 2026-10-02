@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: 'ci = normal checks; build-ru-dictionary = rebuild data/ru-typo*.txt from the pinned Leipzig packs and commit them to this branch; typo-final-test = the one-off held-out RU typo evaluation'
+        description: 'ci = normal checks; build-ru-dictionary = rebuild data/ru-typo*.txt and data/ru-pairs.bin from the pinned Leipzig packs and commit them to this branch; typo-final-test = the one-off held-out RU typo evaluation; dev-label-review = commit eval/dev_label_review.tsv (dev changes of words the gold standard kept) for an owner review'
         type: choice
-        options: [ci, build-ru-dictionary, typo-final-test]
+        options: [ci, build-ru-dictionary, typo-final-test, dev-label-review]
         default: ci
 
 concurrency:
@@ -74,11 +74,19 @@ jobs:
         run: |
           ./tools/fetch_leipzig.sh
           python3 tools/build_ru_typo_list.py data/ru-typo.txt 200000 leipzig/*.tar.gz
+      # Same for the word-pair context table (data/ru-pairs.bin).
+      - name: Build RU word-pair table (only if not bundled yet)
+        if: hashFiles('data/ru-pairs.bin') == ''
+        run: |
+          [ -d leipzig ] || ./tools/fetch_leipzig.sh
+          python3 tools/build_ru_pairs.py data/ru-typo.txt data/ru-pairs.bin 3 leipzig/*.tar.gz
       - name: Evaluate
         run: |
           dotnet build tools/KeySwitch.TypoEval -c Release -v q
           for part in dev $([ "$FINAL_TEST" = true ] && echo test); do
-            dotnet run --no-build --project tools/KeySwitch.TypoEval -c Release -- --pairs eval/$part.report.json $(find eval/$part -name '*.json' | sort) > /dev/null; done
+            # Dev only: also score with the owner's verdicts on changes of gold-kept words (eval/dev_label_review.tsv).
+            review=$([ "$part" = dev ] && [ -f eval/dev_label_review.tsv ] && echo "--review eval/dev_label_review.tsv" || true)
+            dotnet run --no-build --project tools/KeySwitch.TypoEval -c Release -- --pairs eval/$part.report.json $review $(find eval/$part -name '*.json' | sort) > /dev/null; done
       - name: Owner typos (regression set)
         run: |
           dotnet run --no-build --project tools/KeySwitch.TypoEval -c Release -- --owner tests/KeySwitch.Core.Tests/fixtures/owner_typos.txt > eval/owner.md
@@ -89,9 +97,18 @@ jobs:
           python3 - <<'PY'
           import json
           for name, r in json.load(open("eval/dev.report.json")).items():
+              if name == "realword":
+                  print("--- word-pair context bundled:", r["PairContext"])
+                  for probe, summary in r["Probes"].items():
+                      print(f"--- real-word changes that were not right ({probe})")
+                      for example in summary["Examples"]: print("  ", example)
+                  continue
               if name == "variants": continue
               if name == "total":
                   print("--- dev by edit distance:", r["ByDistance"])
+                  print("--- dev misses by reason:", r["MissReasons"])
+                  print("--- dev typos that are real words, by confusion:", r["RealWordTypos"])
+                  for example in r["RealWordExamples"]: print("  ", example)
                   continue
               for kind in ("WrongExamples", "FalseExamples", "MissExamples"):
                   print(f"--- {name} {kind}")
@@ -107,9 +124,13 @@ jobs:
           print("|---|---|---:|---:|---:|---:|---:|---:|---:|")
           for part in parts:
               for name, r in json.load(open(f"eval/{part}.report.json")).items():
-                  if name == "variants": continue
+                  if name in ("variants", "realword"): continue
                   print(f"| {part} | {name} | {r['Typos']} | {r['Corrected']} | {r['WrongCorrections']} | {r['FalseCorrections']} "
                         f"| {r['ChangePrecision']:.2%} | {r['Recall']:.2%} | {r['FalseCorrectionRate']:.3%} |")
+                  if r.get("Reviewed"):
+                      v = r["Reviewed"]
+                      print(f"| {part}, owner-reviewed labels | {name} ({v['Unreviewed']} unreviewed counted as false) | {v['Typos']} | {v['Corrected']} | {v['WrongCorrections']} | {v['FalseCorrections']} "
+                            f"| {v['ChangePrecision']:.2%} | {v['Recall']:.2%} | {v['FalseCorrectionRate']:.3%} |")
           if "test" in parts:
               manual = json.load(open("eval/test.report.json"))["total"]["ManualSweep"]
               print("\n### Pause suggestions on the test split\n")
@@ -133,13 +154,51 @@ jobs:
           for name, sweep in json.load(open("eval/dev.report.json"))["variants"].items():
               for t, r in sweep.items():
                   print(f"| {name} | {t} | {r['Right']} | {r['Wrong']} | {r['FalseOnClean']} | {r['Precision']:.2%} | {r['Recall']:.2%} | {r['FalseRate']:.3%} |")
+          realword = json.load(open("eval/dev.report.json"))["realword"]
+          print(f"\n### Real-word errors by the previous word (dev; pair table bundled: {realword['PairContext']})\n")
+          print("| min pairs | kind | lead | right | wrong | false | precision | false rate |")
+          print("|---|---|---:|---:|---:|---:|---:|---:|")
+          for probe, summary in realword["Probes"].items():
+              for kind, sweep in summary["ByKind"].items():
+                  for t, r in sweep.items():
+                      print(f"| {probe} | {kind} | {t} | {r['Right']} | {r['Wrong']} | {r['FalseOnClean']} | {r['Precision']:.2%} | {r['FalseRate']:.3%} |")
           PY
           cat "$GITHUB_STEP_SUMMARY"
       - name: Upload reports
         uses: actions/upload-artifact@v5
         with:
           name: typo-eval
-          path: eval/*.report.json
+          path: |
+            eval/*.report.json
+            eval/*.false.tsv
+
+  # Manual: commit the dev changes of words the gold standard kept, for an owner review (never the test split).
+  dev-label-review:
+    name: Dev label review file (manual)
+    if: github.event_name == 'workflow_dispatch' && inputs.task == 'dev-label-review'
+    needs: typo-eval
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: typo-eval
+          path: typo-eval
+      - name: Commit eval/dev_label_review.tsv to ${{ github.ref_name }}
+        run: |
+          # A file that is already under review is never overwritten.
+          if [ -e eval/dev_label_review.tsv ]; then echo "::notice::eval/dev_label_review.tsv exists; not overwritten"; exit 0; fi
+          mkdir -p eval
+          cp typo-eval/dev.report.false.tsv eval/dev_label_review.tsv
+          echo "$(grep -vc '^#' eval/dev_label_review.tsv) lines (with header)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add eval/dev_label_review.tsv
+          git commit -m "Dev label review: changes of words the gold standard kept (workflow_dispatch run ${{ github.run_id }})"
+          git push origin "HEAD:${{ github.ref_name }}"
 
   # Manual: rebuild the RU typo word lists from the pinned Leipzig packs and commit them to the branch.
   ru-dictionary:
@@ -156,14 +215,15 @@ jobs:
       - name: Build lists
         run: |
           python3 tools/build_ru_typo_list.py data/ru-typo.txt 200000 leipzig/*.tar.gz
-          cat data/ru-typo.manifest.txt
+          python3 tools/build_ru_pairs.py data/ru-typo.txt data/ru-pairs.bin 3 leipzig/*.tar.gz
+          cat data/ru-typo.manifest.txt data/ru-pairs.manifest.txt
       - name: Commit to ${{ github.ref_name }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/ru-typo.txt data/ru-typo-seen.txt data/ru-typo.manifest.txt
+          git add data/ru-typo.txt data/ru-typo-seen.txt data/ru-typo.manifest.txt data/ru-pairs.bin data/ru-pairs.manifest.txt
           if git diff --cached --quiet; then echo "Lists unchanged"; exit 0; fi
-          git commit -m "Build RU typo word-form lists from pinned Leipzig packs (workflow_dispatch run ${{ github.run_id }})"
+          git commit -m "Build RU typo word-form lists and word-pair table from pinned Leipzig packs (workflow_dispatch run ${{ github.run_id }})"
           git push origin "HEAD:${{ github.ref_name }}"
 
   windows:
