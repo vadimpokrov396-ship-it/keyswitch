@@ -39,7 +39,7 @@ static class PairEval
         };
         foreach (var input in inputs)
         {
-            var counts = new PairCounts();
+            var counts = new PairCounts { Name = Path.GetFileName(Path.GetDirectoryName(Path.GetFullPath(input))) + "/" + Path.GetFileName(input) };
             foreach (var line in File.ReadLines(input))
             {
                 if (string.IsNullOrWhiteSpace(line)) continue;
@@ -52,6 +52,7 @@ static class PairEval
             total.Add(counts);
         }
         report["total"] = total.Summary();
+        WriteFalseReview(Path.ChangeExtension(output, ".false.tsv"), total.FalseRows);
         report["variants"] = variants.ToDictionary(v => v.Name, v => v.Summary(total.Typos, total.CleanWords));
         // Real-word errors decided by the previous word, per minimum pair count, confusion kind and margin.
         report["realword"] = new
@@ -68,7 +69,8 @@ static class PairEval
 
     private static void Evaluate(TypoCorrector corrector, string source, string correction, PairCounts counts, List<Variant> variants)
     {
-        var typed = Word.Matches(source).Select(x => x.Value).ToArray();
+        var matches = Word.Matches(source);
+        var typed = matches.Select(x => x.Value).ToArray();
         var fixedWords = Word.Matches(correction).Select(x => x.Value).ToArray();
         counts.Sentences++;
         var target = Align(typed, fixedWords);
@@ -92,7 +94,12 @@ static class PairEval
                     int distance = Distance(word.ToLowerInvariant(), decision.Corrected.ToLowerInvariant());
                     var bucket = counts.Bucket(distance);
                     counts.Changes.Add((decision.Confidence, clean ? 2 : Normalize(decision.Corrected) == Normalize(expected) ? 0 : 1));
-                    if (clean) { counts.FalseCorrections++; bucket[2]++; counts.AddExample(counts.FalseExamples, $"{word} -> {decision.Corrected}"); }
+                    if (clean)
+                    {
+                        counts.FalseCorrections++; bucket[2]++; counts.AddExample(counts.FalseExamples, $"{word} -> {decision.Corrected}");
+                        counts.FalseRows.Add(new[] { counts.Name, Context(source, matches[i]), word, decision.Corrected,
+                            decision.Confidence.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) });
+                    }
                     else if (Normalize(decision.Corrected) == Normalize(expected)) { counts.Corrected++; bucket[0]++; }
                     else { counts.WrongCorrections++; bucket[1]++; counts.AddExample(counts.WrongExamples, $"{word} -> {decision.Corrected} (expected {expected})"); }
                 }
@@ -137,6 +144,32 @@ static class PairEval
 
     private static string Normalize(string word) => word.ToLowerInvariant().Replace('ё', 'е');
 
+    /// <summary>The typed sentence with the word marked as [[word]], whitespace collapsed, at most ~120 characters
+    /// on each side.</summary>
+    private static string Context(string source, Match match)
+    {
+        int start = Math.Max(0, match.Index - 120), end = Math.Min(source.Length, match.Index + match.Length + 120);
+        string text = (start > 0 ? "…" : "") + source[start..match.Index] + "[[" + match.Value + "]]" +
+            source[(match.Index + match.Length)..end] + (end < source.Length ? "…" : "");
+        return Regex.Replace(text, @"\s+", " ").Trim();
+    }
+
+    /// <summary>Every change of a word the gold standard left as typed, for an owner review: many are typos the
+    /// annotators kept (they preserved the writer's style), the rest are real false corrections.</summary>
+    private static void WriteFalseReview(string path, List<string[]> rows)
+    {
+        var lines = new List<string>
+        {
+            "# Проверка разметки dev: KeySwitch исправил слово, которое в эталоне оставлено как есть.",
+            "# verdict: typo = в тексте опечатка, исправление верное; typo-other = опечатка, но правильно иначе (впишите в intended);",
+            "#          correct = слово написано верно, исправлять нельзя; unsure = непонятно. Остальные колонки не меняйте.",
+            "# Данные: ai-forever/spellcheck_benchmark, обучающие части RUSpellRU и MultidomainGold (MIT; Martynov et al., 2023).",
+            "id\tset\tcontext\tgold_word\tkeyswitch\tlead\tverdict\tintended",
+        };
+        for (int i = 0; i < rows.Count; i++) lines.Add($"{i + 1}\t{string.Join('\t', rows[i])}\t\t");
+        File.WriteAllLines(path, lines);
+    }
+
     /// <summary>Pairs typed words with corrected words: identical words via LCS, and the words between two
     /// anchors one to one when both gaps have the same length. Splits and merges stay unaligned (null).</summary>
     private static string?[] Align(string[] typed, string[] fixedWords)
@@ -180,7 +213,10 @@ static class PairEval
 sealed class PairCounts
 {
     public int Sentences, UnalignedWords, CleanWords, IgnoredEdits, Typos, Corrected, WrongCorrections, FalseCorrections;
+    public string Name = "";
     public List<string> FalseExamples = new(), WrongExamples = new(), MissExamples = new(), RealWordExamples = new();
+    // Changes of words the gold standard kept: set, context, word, correction, lead.
+    public List<string[]> FalseRows = new();
     // Why real typos were left unchanged, and how typos that are real words relate to the intended word.
     public SortedDictionary<string, int> MissReasons = new(StringComparer.Ordinal), RealWordTypos = new(StringComparer.Ordinal);
     // Manual suggestions for real typos: (confidence, suggestion == intended word).
@@ -197,6 +233,7 @@ sealed class PairCounts
         IgnoredEdits += other.IgnoredEdits; Typos += other.Typos; Corrected += other.Corrected;
         WrongCorrections += other.WrongCorrections; FalseCorrections += other.FalseCorrections;
         Changes.AddRange(other.Changes);
+        FalseRows.AddRange(other.FalseRows);
         foreach (var (k, v) in other.MissReasons) MissReasons[k] = MissReasons.GetValueOrDefault(k) + v;
         foreach (var (k, v) in other.RealWordTypos) RealWordTypos[k] = RealWordTypos.GetValueOrDefault(k) + v;
         foreach (var example in other.RealWordExamples) AddExample(RealWordExamples, example);

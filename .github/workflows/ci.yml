@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: 'ci = normal checks; build-ru-dictionary = rebuild data/ru-typo*.txt and data/ru-pairs.bin from the pinned Leipzig packs and commit them to this branch; typo-final-test = the one-off held-out RU typo evaluation'
+        description: 'ci = normal checks; build-ru-dictionary = rebuild data/ru-typo*.txt and data/ru-pairs.bin from the pinned Leipzig packs and commit them to this branch; typo-final-test = the one-off held-out RU typo evaluation; dev-label-review = commit eval/dev_label_review.tsv (dev changes of words the gold standard kept) for an owner review'
         type: choice
-        options: [ci, build-ru-dictionary, typo-final-test]
+        options: [ci, build-ru-dictionary, typo-final-test, dev-label-review]
         default: ci
 
 concurrency:
@@ -162,7 +162,37 @@ jobs:
         uses: actions/upload-artifact@v5
         with:
           name: typo-eval
-          path: eval/*.report.json
+          path: |
+            eval/*.report.json
+            eval/*.false.tsv
+
+  # Manual: commit the dev changes of words the gold standard kept, for an owner review (never the test split).
+  dev-label-review:
+    name: Dev label review file (manual)
+    if: github.event_name == 'workflow_dispatch' && inputs.task == 'dev-label-review'
+    needs: typo-eval
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: typo-eval
+          path: typo-eval
+      - name: Commit eval/dev_label_review.tsv to ${{ github.ref_name }}
+        run: |
+          # A file that is already under review is never overwritten.
+          if [ -e eval/dev_label_review.tsv ]; then echo "::notice::eval/dev_label_review.tsv exists; not overwritten"; exit 0; fi
+          mkdir -p eval
+          cp typo-eval/dev.report.false.tsv eval/dev_label_review.tsv
+          echo "$(grep -vc '^#' eval/dev_label_review.tsv) lines (with header)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add eval/dev_label_review.tsv
+          git commit -m "Dev label review: changes of words the gold standard kept (workflow_dispatch run ${{ github.run_id }})"
+          git push origin "HEAD:${{ github.ref_name }}"
 
   # Manual: rebuild the RU typo word lists from the pinned Leipzig packs and commit them to the branch.
   ru-dictionary:
