@@ -80,3 +80,56 @@ public sealed class PairContextTests
         finally { TypoCorrector.RussianEnabled = saved; }
     }
 }
+
+// Capitalized words at a sentence start (TypoPolicy.SentenceStartCapitals).
+[Collection(RussianSwitch.Name)]
+public sealed class SentenceStartCapitalTests
+{
+    private static TypoDecision Evaluate(string word, bool sentenceStart, TypoPolicy policy)
+    {
+        bool saved = TypoCorrector.RussianEnabled;
+        TypoCorrector.RussianEnabled = true;
+        try { return new TypoCorrector(new DecisionEngine()).Evaluate(word, null, null, null, policy, sentenceStart); }
+        finally { TypoCorrector.RussianEnabled = saved; }
+    }
+
+    private static readonly TypoPolicy Capitals = TypoPolicy.Auto with { SentenceStartCapitals = true, CapitalMinMargin = 4 };
+
+    [Fact]
+    public void CapitalAtSentenceStartIsFixedAndRecapitalized()
+    {
+        var decision = Evaluate("Правительсво", true, Capitals);
+        Assert.True(decision.ShouldCorrect, decision.Reason);
+        Assert.Equal("Правительство", decision.Corrected);
+        Assert.Equal("Правительсво", decision.Original);
+    }
+
+    [Fact]
+    public void CapitalInsideSentenceStaysProtected() => Assert.Equal("protected-case", Evaluate("Правительсво", false, Capitals).Reason);
+
+    [Fact]
+    public void KnownNamesStayAtSentenceStart() => Assert.False(Evaluate("Светка", true, Capitals).ShouldCorrect);
+
+    [Fact]
+    public void AllCapsStayProtected() => Assert.False(Evaluate("ПРАВИТЕЛЬСВО", true, Capitals).ShouldCorrect);
+
+    [Fact]
+    public void AutoPolicyChecksSentenceStarts() => Assert.True(TypoPolicy.Auto.SentenceStartCapitals);
+
+    // The app path: an empty context (start of input or after . ! ?) is a sentence start; elsewhere capitals stay.
+    [Fact]
+    public void BoundaryEngineFixesCapitalOnlyAtSentenceStart()
+    {
+        bool saved = TypoCorrector.RussianEnabled;
+        TypoCorrector.RussianEnabled = true;
+        try
+        {
+            var boundary = new BoundaryEngine(new DecisionEngine());
+            Assert.Equal("Правительство", boundary.Complete("Правительсво", " ").Replacement);
+            Assert.Equal("Правительсво", boundary.Complete("Правительсво", " ").Replacement);
+            Assert.Equal("правительство.", boundary.Complete("правительсво.", " ").Replacement);
+            Assert.Equal("Правительство", boundary.Complete("Правительсво", " ").Replacement);
+        }
+        finally { TypoCorrector.RussianEnabled = saved; }
+    }
+}

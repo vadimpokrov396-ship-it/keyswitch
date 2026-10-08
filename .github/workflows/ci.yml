@@ -138,6 +138,8 @@ jobs:
               print("|---:|---:|---:|")
               for t, r in manual.items():
                   print(f"| {t} | {r['Accuracy']:.2%} | {r['Coverage']:.2%} |")
+          pause = json.load(open("eval/dev.report.json"))["total"]["PauseOptions"]
+          print(f"\nPause up to three presses (dev): intended spelling offered for {pause['Right']} typos ({pause['Coverage']:.2%}); some spelling offered for {pause['Offered']}.\n")
           print("\n### Auto-correction confidence threshold sweep (dev)\n")
           print("| threshold | precision | recall | false rate |")
           print("|---:|---:|---:|---:|")

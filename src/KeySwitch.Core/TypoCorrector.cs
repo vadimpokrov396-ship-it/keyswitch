@@ -130,12 +130,29 @@ public sealed class TypoCorrector
     /// while Russian auto-correction is off and has a lower bar. A capitalized word is fixed in lower case and
     /// re-capitalized.</summary>
     public TypoDecision Suggest(string word, string? previous = null, string? previous2 = null,
-        IEnumerable<string>? exceptions = null, TypoPolicy? policy = null)
+        IEnumerable<string>? exceptions = null, TypoPolicy? policy = null) =>
+        EvaluateCapitalized(word, previous, previous2, exceptions, policy ?? TypoPolicy.Manual, 0);
+
+    /// <summary>Automatic correction with the position in the sentence: a Russian word written with a capital only
+    /// because it starts a sentence ("Предлагю") is checked in lower case and re-capitalized when the policy allows
+    /// it (<see cref="TypoPolicy.SentenceStartCapitals"/>, with at least <see cref="TypoPolicy.CapitalMinMargin"/> lead,
+    /// since unknown names also start sentences). Elsewhere capitalized words stay protected.</summary>
+    public TypoDecision Evaluate(string word, string? previous, string? previous2, IEnumerable<string>? exceptions, TypoPolicy policy, bool sentenceStart)
     {
-        bool capitalized = word.Length > 1 && char.IsUpper(word[0]) && !word.Skip(1).Any(char.IsUpper);
+        if (!sentenceStart || !policy.SentenceStartCapitals || !IsCapitalized(word) || !word.All(c => c is >= 'а' and <= 'я' or >= 'А' and <= 'Я' or 'ё' or 'Ё'))
+            return Evaluate(word, previous, previous2, exceptions, policy);
+        return EvaluateCapitalized(word, previous, previous2, exceptions, policy, policy.CapitalMinMargin);
+    }
+
+    private static bool IsCapitalized(string word) => word.Length > 1 && char.IsUpper(word[0]) && !word.Skip(1).Any(char.IsUpper);
+
+    private TypoDecision EvaluateCapitalized(string word, string? previous, string? previous2, IEnumerable<string>? exceptions, TypoPolicy policy, double minLead)
+    {
+        bool capitalized = IsCapitalized(word);
         string lower = capitalized ? char.ToLowerInvariant(word[0]) + word[1..] : word;
-        var decision = Evaluate(lower, previous, previous2, exceptions, policy ?? TypoPolicy.Manual);
+        var decision = Evaluate(lower, previous, previous2, exceptions, policy);
         if (!decision.ShouldCorrect || !capitalized) return decision with { Original = word };
+        if (decision.Confidence < minLead) return new(false, word, word, 0, "ambiguous-capital");
         return decision with { Original = word, Corrected = char.ToUpperInvariant(decision.Corrected[0]) + decision.Corrected[1..] };
     }
 
@@ -167,42 +184,8 @@ public sealed class TypoCorrector
         if (russian && IsColloquial(word)) return Keep("colloquial");
         var data = russian ? Ru.Value : En.Value;
         string lower = word.ToLowerInvariant();
-        int maxDistance = !russian && lower.Length >= 8 ? 2 : 1;
-        var candidates = new HashSet<Entry>();
-        if (russian)
-        {
-            foreach (var edit in SingleEdits(lower, RussianLetters))
-                if (data.Find(edit) is { } entry && !IsMisspelling(entry.Word)) candidates.Add(entry);
-            // Two edits only as a fallback for long words, and only when the policy asks for it: a bounded scan
-            // of the ranked forms within two letters of the typed length (early-exit edit distance).
-            if (candidates.Count == 0 && lower.Length >= policy.RussianDistance2MinLength)
-            {
-                maxDistance = 2;
-                string plainTyped = Plain(lower);
-                for (int length = lower.Length - 2; length <= lower.Length + 2; length++)
-                    foreach (var entry in data.OfLength(length))
-                        if (EditDistance(plainTyped, Plain(entry.Word), 2) == 2 && !IsMisspelling(entry.Word)) candidates.Add(entry);
-            }
-        }
-        else
-            foreach (var deleted in DeletesOf(lower, maxDistance))
-                if (data.Deletes.TryGetValue(deleted, out var entries))
-                    foreach (var entry in entries) candidates.Add(entry);
-        // The exact word is in neither ranked lexicon nor the Bloom filter here.
-        var scored = new List<(Entry Entry, double Score, double Cost)>();
-        foreach (var entry in candidates)
-        {
-            if (Math.Abs(entry.Word.Length - lower.Length) > maxDistance) continue;
-            string plain = Plain(entry.Word);
-            int distance = EditDistance(Plain(lower), plain, maxDistance);
-            if (distance == 0 || distance > maxDistance) continue;
-            // A second English edit requires a common destination and a plausible word shape.
-            if (!russian && distance == 2 && (entry.Rank > 10000 || lower.Length < 8)) continue;
-            double cost = distance == 2 ? 3.2 : EditCost(Plain(lower), plain, russian);
-            scored.Add((entry, Score(data, entry.Word, entry.Rank, cost, previous, previous2, russian, policy), cost));
-        }
+        var scored = ScoreCandidates(lower, russian, data, previous, previous2, policy);
         if (scored.Count == 0) return Keep("no-candidate");
-        scored.Sort((a, b) => b.Score.CompareTo(a.Score));
         var best = scored[0];
         double margin = scored.Count == 1 ? 4 : best.Score - scored[1].Score;
         // A strict margin protects unknown names and foreign words absent from the Bloom lexicon.
@@ -270,6 +253,74 @@ public sealed class TypoCorrector
             (a[^3], b[^3]) is ('е', 'и') or ('и', 'е'))
             return RealWordKinds.SecondPlural;
         return RealWordKinds.OtherEdit;
+    }
+
+    /// <summary>Spelling candidates of an unknown word, best first (the exact word is in neither ranked lexicon nor
+    /// the Bloom filter here).</summary>
+    private List<(Entry Entry, double Score, double Cost)> ScoreCandidates(string lower, bool russian, LanguageData data,
+        string? previous, string? previous2, TypoPolicy policy)
+    {
+        int maxDistance = !russian && lower.Length >= 8 ? 2 : 1;
+        var candidates = new HashSet<Entry>();
+        if (russian)
+        {
+            foreach (var edit in SingleEdits(lower, RussianLetters))
+                if (data.Find(edit) is { } entry && !IsMisspelling(entry.Word)) candidates.Add(entry);
+            // Two edits only as a fallback for long words, and only when the policy asks for it: a bounded scan
+            // of the ranked forms within two letters of the typed length (early-exit edit distance).
+            if (candidates.Count == 0 && lower.Length >= policy.RussianDistance2MinLength)
+            {
+                maxDistance = 2;
+                string plainTyped = Plain(lower);
+                for (int length = lower.Length - 2; length <= lower.Length + 2; length++)
+                    foreach (var entry in data.OfLength(length))
+                        if (EditDistance(plainTyped, Plain(entry.Word), 2) == 2 && !IsMisspelling(entry.Word)) candidates.Add(entry);
+            }
+        }
+        else
+            foreach (var deleted in DeletesOf(lower, maxDistance))
+                if (data.Deletes.TryGetValue(deleted, out var entries))
+                    foreach (var entry in entries) candidates.Add(entry);
+        var scored = new List<(Entry Entry, double Score, double Cost)>();
+        foreach (var entry in candidates)
+        {
+            if (Math.Abs(entry.Word.Length - lower.Length) > maxDistance) continue;
+            string plain = Plain(entry.Word);
+            int distance = EditDistance(Plain(lower), plain, maxDistance);
+            if (distance == 0 || distance > maxDistance) continue;
+            // A second English edit requires a common destination and a plausible word shape.
+            if (!russian && distance == 2 && (entry.Rank > 10000 || lower.Length < 8)) continue;
+            double cost = distance == 2 ? 3.2 : EditCost(Plain(lower), plain, russian);
+            scored.Add((entry, Score(data, entry.Word, entry.Rank, cost, previous, previous2, russian, policy), cost));
+        }
+        scored.Sort((a, b) => b.Score.CompareTo(a.Score));
+        return scored;
+    }
+
+    /// <summary>Further spellings for Pause pressed again (after <see cref="Suggest"/>): ranked candidates of a
+    /// misspelled word within <paramref name="maxLead"/> of the best one, re-capitalized like the typed word,
+    /// excluding <paramref name="first"/>. Empty for known, protected or excepted words.</summary>
+    public IReadOnlyList<string> Alternatives(string word, string? first, int max = 2, double maxLead = 6, IEnumerable<string>? exceptions = null)
+    {
+        bool capitalized = IsCapitalized(word);
+        string lower = capitalized ? char.ToLowerInvariant(word[0]) + word[1..] : word;
+        var policy = TypoPolicy.Manual;
+        var decision = Evaluate(lower, null, null, exceptions, policy);
+        if (!decision.ShouldCorrect && decision.Reason is not ("ambiguous-candidate" or "ambiguous-form")) return Array.Empty<string>();
+        if (decision.Reason.EndsWith("-known-misspelling", StringComparison.Ordinal)) return Array.Empty<string>();
+        bool russian = lower.All(c => c is >= 'а' and <= 'я' or 'ё');
+        var scored = ScoreCandidates(lower, russian, russian ? Ru.Value : En.Value, null, null, policy);
+        if (scored.Count == 0) return Array.Empty<string>();
+        int cap = russian ? policy.RussianRankCap : policy.EnglishRankCap;
+        var result = new List<string>();
+        foreach (var (entry, score, _) in scored)
+        {
+            if (result.Count >= max || scored[0].Score - score > maxLead) break;
+            if (entry.Rank > cap) continue;
+            string spelled = capitalized ? char.ToUpperInvariant(entry.Word[0]) + entry.Word[1..] : entry.Word;
+            if (spelled != word && spelled != first && !result.Contains(spelled)) result.Add(spelled);
+        }
+        return result;
     }
 
     private double Score(LanguageData data, string candidate, int rank, double cost, string? previous, string? previous2, bool russian, TypoPolicy policy)
@@ -434,10 +485,13 @@ public sealed record TypoPolicy(double MinMargin, double RussianMinMargin, int R
     /// <remarks>Word-pair context (dev, TypoEval --pairs): candidate weight 0.5 (lead 4.0: 89.74% precision / 20.44% recall vs
     /// 89.26% / 19.43% without) and тся/ться real-word fixes after a typical previous word (pairs >= 20, lead >= 3:
     /// 4 right, 0 changed correct words). Other real-word confusions (стаей/статей) changed far more correct words
-    /// than typos on dev (at best 32% right), so they stay off; ете/ите did not occur on dev and stays off too.</remarks>
+    /// than typos on dev (at best 32% right), so they stay off; ете/ите did not occur on dev and stays off too. Capitalized words at a sentence start are checked with the same
+    /// lead (dev, lead 4: those words alone 253 right / 2 wrong / 7 correct words changed, 96.6%; all words 91.81% /
+    /// 29.76% / 0.052% instead of 90.18% / 21.77% / 0.047%); lead 5 kept almost none.</remarks>
     public static TypoPolicy Auto => new(2.2, TypoCorrector.RussianMargin, TypoCorrector.RussianRankCap, 12000, 5, false, int.MaxValue, "typo-autocorrect")
     {
         ContextWeight = 0.5, RealWordMargin = 3, RealWordMinPairs = 20, RealWordKinds = RealWordKinds.Tsya,
+        SentenceStartCapitals = true, CapitalMinMargin = TypoCorrector.RussianMargin,
     };
     /// <summary>Pause / double Shift on a word: works with Russian auto-correction off, lower bar, whole form list
     /// (dev: rank cap 200k beats 50k on both accuracy and coverage). Two edits stay off in both modes: on the dev
@@ -453,6 +507,11 @@ public sealed record TypoPolicy(double MinMargin, double RussianMinMargin, int R
     public double RealWordMargin { get; init; } = double.PositiveInfinity;
     /// <summary>Real-word errors: minimum corpus count of (previous word, intended word).</summary>
     public double RealWordMinPairs { get; init; } = 20;
+    /// <summary>Check Russian words capitalized at the start of a sentence in lower case (off: they stay protected
+    /// like names).</summary>
+    public bool SentenceStartCapitals { get; init; }
+    /// <summary>Minimum lead for a correction of such a capitalized word.</summary>
+    public double CapitalMinMargin { get; init; }
     /// <summary>Real-word errors: which confusions are corrected.</summary>
     public RealWordKinds RealWordKinds { get; init; } = RealWordKinds.Tsya | RealWordKinds.SecondPlural;
 }

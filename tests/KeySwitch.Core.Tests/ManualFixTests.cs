@@ -52,3 +52,42 @@ public sealed class ManualFixTests
         Assert.True(fix.LayoutChange);
     }
 }
+
+// Pause pressed again cycles through further spellings (T9-like), then the app restores the typed word.
+public sealed class ManualOptionsTests
+{
+    private static IReadOnlyList<ManualFix> Options(string token) => new BoundaryEngine(new DecisionEngine()).ManualOptions(token);
+
+    [Fact]
+    public void FirstOptionIsWhatPauseDidBefore()
+    {
+        var engine = new BoundaryEngine(new DecisionEngine());
+        foreach (var token in new[] { "ghbdtn", "правительсво", "превет", "привет", "becuase" })
+            Assert.Equal(engine.Manual(token), engine.ManualOptions(token)[0]);
+    }
+
+    [Theory]
+    [InlineData("превет", "привет")]
+    [InlineData("Превет", "Привет")]
+    public void AmbiguousTypoOffersTheIntendedSpelling(string typed, string intended) =>
+        Assert.Contains(intended, Options(typed).Select(o => o.Replacement));
+
+    [Theory]
+    [InlineData("правительсво")]
+    [InlineData("превет")]
+    [InlineData("becuase")]
+    public void OptionsAreDistinctAndAtMostThree(string typed)
+    {
+        var options = Options(typed).Select(o => o.Replacement).ToList();
+        Assert.InRange(options.Count, 1, 3);
+        Assert.Equal(options.Count, options.Distinct().Count());
+        Assert.DoesNotContain(typed, options);
+        Assert.All(Options(typed).Skip(1), o => Assert.False(o.LayoutChange));
+    }
+
+    // Known words and wrong-layout words that form a known word get no spelling alternatives.
+    [Theory]
+    [InlineData("привет")]
+    [InlineData("ghbdtn")]
+    public void NoAlternativesForKnownWords(string typed) => Assert.Single(Options(typed));
+}

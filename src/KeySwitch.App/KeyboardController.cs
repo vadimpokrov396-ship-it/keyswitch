@@ -258,7 +258,10 @@ internal sealed class KeyboardController : IDisposable
         if (lastConversion is { } prior && Same(prior.Target, target))
         {
             string? undoIdentity = await guard.GetSafeIdentityAsync(target);
-            if (SameIdentity(prior.Identity, undoIdentity) && guard.IsSame(target) && InputRevision == revision) Undo(prior);
+            if (!SameIdentity(prior.Identity, undoIdentity) || !guard.IsSame(target) || InputRevision != revision) return;
+            // Pause again: the next spelling (T9-like), after the last one the typed word.
+            if (prior.Options is { } cycle && prior.OptionIndex + 1 < cycle.Count) NextOption(prior, cycle[prior.OptionIndex + 1]);
+            else Undo(prior);
             return;
         }
         bool trailingSpace = word.Length == 0 && lastWord is not null && Same(lastWordTarget, target);
@@ -269,7 +272,8 @@ internal sealed class KeyboardController : IDisposable
         string original = trailingSpace ? lastWord! : word.ToString();
         if (original.Length is 0 or > 80) return;
         // Wrong-layout text becomes the other layout; a misspelled word gets its spelling fix instead.
-        var fix = boundary.Manual(original);
+        var options = boundary.ManualOptions(original);
+        var fix = options[0];
         string converted = fix.Replacement;
         Diagnostics.Write($"token length={original.Length} decision={fix.Reason} confidence=1 changed={converted != original}");
         if (converted == original) return;
@@ -278,7 +282,7 @@ internal sealed class KeyboardController : IDisposable
         var sent = Native.Replace(original.Length + (trailingSpace ? 1 : 0), converted + (trailingSpace ? " " : ""));
         if (!sent.Complete) { Reset(); WarnUipi(target, sent); return; }
         if (fix.LayoutChange) SwitchLayout(target, converted);
-        lastConversion = new Conversion(original, converted, trailingSpace ? " " : "", target, identity, false, fix.LayoutChange);
+        lastConversion = new Conversion(original, converted, trailingSpace ? " " : "", target, identity, false, fix.LayoutChange) { Options = options };
         lastWord = null; lastWordProbe = null;
         boundary.Reset();
         if (trailingSpace) ResetWord();
@@ -288,6 +292,21 @@ internal sealed class KeyboardController : IDisposable
             word.Append(converted);
             wordTarget = target;
             wordProbe = Task.FromResult<string?>(identity);
+        }
+        StateChanged?.Invoke();
+    }
+
+    private void NextOption(Conversion prior, ManualFix next)
+    {
+        var sent = Native.Replace(prior.Converted.Length + prior.Suffix.Length, next.Replacement + prior.Suffix);
+        if (!sent.Complete) { Reset(); WarnUipi(prior.Target, sent); return; }
+        if (next.LayoutChange != prior.LayoutChanged) SwitchLayout(prior.Target, next.LayoutChange ? next.Replacement : prior.Original);
+        Diagnostics.Write($"manual option={prior.OptionIndex + 1} decision={next.Reason}");
+        lastConversion = prior with { Converted = next.Replacement, LayoutChanged = next.LayoutChange, OptionIndex = prior.OptionIndex + 1 };
+        if (prior.Suffix.Length == 0)
+        {
+            word.Clear();
+            word.Append(next.Replacement);
         }
         StateChanged?.Invoke();
     }
@@ -407,5 +426,10 @@ internal sealed class KeyboardController : IDisposable
         if (mouseHook != IntPtr.Zero) { Native.UnhookWindowsHookEx(mouseHook); mouseHook = IntPtr.Zero; }
         dispatcher.Dispose();
     }
-    private sealed record Conversion(string Original, string Converted, string Suffix, FocusTarget Target, string Identity, bool Typo, bool LayoutChanged);
+    private sealed record Conversion(string Original, string Converted, string Suffix, FocusTarget Target, string Identity, bool Typo, bool LayoutChanged)
+    {
+        // Pause: every option for this word and the one shown now.
+        public IReadOnlyList<ManualFix>? Options { get; init; }
+        public int OptionIndex { get; init; }
+    }
 }

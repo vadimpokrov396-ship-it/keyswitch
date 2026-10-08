@@ -38,6 +38,10 @@ static class PairEval
             new("auto pair veto lift<-2", autoSweep with { ContextVeto = -2 }, false),
             new("auto pair veto lift<-3", autoSweep with { ContextVeto = -3 }, false),
             new("auto context x1 + veto lift<-2", autoSweep with { ContextWeight = 1, ContextVeto = -2 }, false),
+            // Capitalized words at a sentence start (Предлагю): all words, and those words alone.
+            new("auto + sentence-start capitals, their lead >= 4", autoSweep with { SentenceStartCapitals = true, CapitalMinMargin = 4 }, false),
+            new("auto + sentence-start capitals, their lead >= 5", autoSweep with { SentenceStartCapitals = true, CapitalMinMargin = 5 }, false),
+            new("only sentence-start capitals", autoSweep with { SentenceStartCapitals = true }, false, CapitalsOnly: true),
             new("manual rank<=50k", manualSweep with { RussianRankCap = 50000 }, true),
             new("manual rank<=200k", manualSweep with { RussianRankCap = 200000 }, true),
             new("manual rank<=200k +2 edits for 8+ letters", manualSweep with { RussianRankCap = 200000, RussianDistance2MinLength = 8 }, true),
@@ -84,13 +88,17 @@ static class PairEval
         {
             string word = typed[i];
             string? expected = target[i];
+            // As in the app: the context starts empty at a sentence start (BoundaryEngine resets it after . ! ?).
+            bool sentenceStart = SentenceStart(source, matches[i]);
+            if (sentenceStart) previous = previous2 = null;
+            bool capitalStart = sentenceStart && word.Length > 1 && char.IsUpper(word[0]) && !word.Skip(1).Any(char.IsUpper);
             if (expected is null) { counts.UnalignedWords++; }
             else
             {
                 bool clean = word == expected;
                 // Case-only and е/ё-only differences are not spelling errors KeySwitch should fix.
                 bool ignored = !clean && Normalize(word) == Normalize(expected);
-                var decision = corrector.Evaluate(word, previous, previous2);
+                var decision = corrector.Evaluate(word, previous, previous2, null, TypoPolicy.Auto, sentenceStart);
                 if (clean) counts.CleanWords++;
                 else if (ignored) counts.IgnoredEdits++;
                 else counts.Typos++;
@@ -134,12 +142,21 @@ static class PairEval
                 // Manual mode (Pause on a misspelled word, no context): would the suggestion be the intended word?
                 if (!clean && !ignored && corrector.Suggest(word, null, null, null, TypoPolicy.Manual with { MinMargin = 0, RussianMinMargin = 0 }) is { ShouldCorrect: true } suggestion)
                     counts.Suggestions.Add((suggestion.Confidence, Normalize(suggestion.Corrected) == Normalize(expected)));
+                // Pause pressed up to three times (shipped threshold, then the alternatives): is the intended word offered?
+                if (!clean && !ignored)
+                {
+                    var first = corrector.Suggest(word);
+                    var offered = (first.ShouldCorrect ? new[] { first.Corrected } : Array.Empty<string>())
+                        .Concat(corrector.Alternatives(word, first.ShouldCorrect ? first.Corrected : null)).ToList();
+                    if (offered.Count > 0) counts.PauseOffered++;
+                    if (offered.Any(o => Normalize(o) == Normalize(expected))) counts.PauseOfferedRight++;
+                }
                 if (!ignored)
                     foreach (var variant in variants)
                     {
-                        if (variant.Manual && clean) continue;
+                        if (variant.Manual && clean || variant.CapitalsOnly && !capitalStart) continue;
                         var result = variant.Manual ? corrector.Suggest(word, null, null, null, variant.Policy)
-                            : corrector.Evaluate(word, previous, previous2, null, variant.Policy);
+                            : corrector.Evaluate(word, previous, previous2, null, variant.Policy, sentenceStart);
                         if (result.ShouldCorrect)
                             variant.Changes.Add((result.Confidence, clean ? 2 : Normalize(result.Corrected) == Normalize(expected) ? 0 : 1));
                     }
@@ -150,6 +167,15 @@ static class PairEval
     }
 
     internal static string Normalize(string word) => word.ToLowerInvariant().Replace('ё', 'е');
+
+    /// <summary>Whether the word starts a sentence: nothing but spaces, quotes, brackets and dashes between it and
+    /// the start of the text or a . ! ? … before it.</summary>
+    private static bool SentenceStart(string source, Match match)
+    {
+        int i = match.Index - 1;
+        while (i >= 0 && (char.IsWhiteSpace(source[i]) || "\"'«»„“”([{-–—".Contains(source[i]))) i--;
+        return i < 0 || ".!?…".Contains(source[i]);
+    }
 
     private static string Key(string set, string context, string word) => set + "\t" + context + "\t" + word;
 
@@ -240,6 +266,8 @@ sealed class PairCounts
     // Changes of gold-kept words scored with the owner's verdicts: right, wrong, still a false change; how many such
     // changes have no verdict yet (counted as false), and how many reviewed words are typos (added to Typos).
     public int ReviewedRight, ReviewedWrong, ReviewedFalse, Unreviewed, ReviewedTypos;
+    // Typos for which Pause (up to three presses) offers any spelling, and offers the intended one.
+    public int PauseOffered, PauseOfferedRight;
     public void Review((string Verdict, string Proposed, string Intended)? label, string corrected)
     {
         switch (label?.Verdict)
@@ -278,6 +306,7 @@ sealed class PairCounts
         FalseRows.AddRange(other.FalseRows);
         ReviewedRight += other.ReviewedRight; ReviewedWrong += other.ReviewedWrong; ReviewedFalse += other.ReviewedFalse;
         Unreviewed += other.Unreviewed; ReviewedTypos += other.ReviewedTypos;
+        PauseOffered += other.PauseOffered; PauseOfferedRight += other.PauseOfferedRight;
         foreach (var (k, v) in other.MissReasons) MissReasons[k] = MissReasons.GetValueOrDefault(k) + v;
         foreach (var (k, v) in other.RealWordTypos) RealWordTypos[k] = RealWordTypos.GetValueOrDefault(k) + v;
         foreach (var example in other.RealWordExamples) AddExample(RealWordExamples, example);
@@ -294,6 +323,7 @@ sealed class PairCounts
             ChangePrecision = Math.Round((double)Corrected / Math.Max(1, changes), 4),
             Recall = Math.Round((double)Corrected / Math.Max(1, Typos), 4),
             FalseCorrectionRate = Math.Round((double)FalseCorrections / Math.Max(1, CleanWords), 5),
+            PauseOptions = new { Offered = PauseOffered, Right = PauseOfferedRight, Coverage = Math.Round((double)PauseOfferedRight / Math.Max(1, Typos), 4) },
             // The same with the owner's verdicts on changes of gold-kept words (null without a review file).
             Reviewed = ReviewedRight + ReviewedWrong + ReviewedFalse == 0 ? null : new
             {
@@ -323,7 +353,7 @@ sealed class PairCounts
     }
 }
 
-sealed record Variant(string Name, TypoPolicy Policy, bool Manual)
+sealed record Variant(string Name, TypoPolicy Policy, bool Manual, bool CapitalsOnly = false)
 {
     // (confidence, outcome 0 = intended word, 1 = wrong word, 2 = changed a correct word)
     public List<(double Confidence, int Outcome)> Changes { get; } = new();

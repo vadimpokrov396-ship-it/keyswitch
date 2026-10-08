@@ -30,6 +30,19 @@ public sealed class BoundaryEngine(DecisionEngine engine, bool legacy = false,
         if (suggestion.ShouldCorrect) return new(suggestion.Corrected, false, suggestion.Reason);
         return new(converted, true, "manual-layout");
     }
+    /// <summary>What successive Pause presses offer, like T9 cycling: <see cref="Manual"/> first, then up to two
+    /// further spellings of a misspelled word (same script, no layout switch). After the last one Pause restores the
+    /// typed word.</summary>
+    public IReadOnlyList<ManualFix> ManualOptions(string token, IEnumerable<string>? exceptions = null)
+    {
+        var first = Manual(token, exceptions);
+        var options = new List<ManualFix> { first };
+        if (token.All(char.IsLetter))
+            foreach (var spelled in typo.Alternatives(token, first.Replacement, exceptions: exceptions))
+                options.Add(new(spelled, false, "manual-alternative"));
+        return options;
+    }
+
     public BoundaryResult Complete(string token, string separator, IEnumerable<string>? exceptions = null)
     {
         if (token.Length == 0)
@@ -93,8 +106,9 @@ public sealed class BoundaryEngine(DecisionEngine engine, bool legacy = false,
             {
                 var allTypoExceptions = exceptions is null ? TypoExceptions :
                     TypoExceptions is null ? exceptions : exceptions.Concat(TypoExceptions);
+                // The context is reset at a sentence end, Enter and Tab: an empty context is a sentence start.
                 var typoDecision = typo.Evaluate(replacement[start..end], context.LastOrDefault(),
-                    context.Count > 1 ? context[^2] : null, allTypoExceptions);
+                    context.Count > 1 ? context[^2] : null, allTypoExceptions, TypoPolicy.Auto, context.Count == 0);
                 if (typoDecision.ShouldCorrect)
                 {
                     replacement = replacement[..start] + typoDecision.Corrected + replacement[end..];
