@@ -100,7 +100,7 @@ internal sealed class TrayApplication : ApplicationContext
 
     private void UpdateTray()
     {
-        convertHint.Text = $"{settings.ConvertHotkey}{(settings.DoubleShiftEnabled ? " / двойной Shift" : "")} — раскладка или опечатка слова / отмена";
+        convertHint.Text = $"{settings.ConvertHotkey}{(settings.DoubleShiftEnabled ? " / двойной Shift" : "")} — раскладка или опечатка слова; ещё раз — другой вариант, затем исходное слово";
         selectionHint.Text = $"{settings.SelectionHotkey} — выделение";
         toggleHint.Text = $"{settings.ToggleHotkey} — автозамена";
         grammarHint.Text = $"{settings.GrammarHotkey} — грамматика выделения";

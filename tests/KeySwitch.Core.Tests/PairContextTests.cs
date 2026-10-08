@@ -112,4 +112,24 @@ public sealed class SentenceStartCapitalTests
 
     [Fact]
     public void AllCapsStayProtected() => Assert.False(Evaluate("ПРАВИТЕЛЬСВО", true, Capitals).ShouldCorrect);
+
+    [Fact]
+    public void AutoPolicyChecksSentenceStarts() => Assert.True(TypoPolicy.Auto.SentenceStartCapitals);
+
+    // The app path: an empty context (start of input or after . ! ?) is a sentence start; elsewhere capitals stay.
+    [Fact]
+    public void BoundaryEngineFixesCapitalOnlyAtSentenceStart()
+    {
+        bool saved = TypoCorrector.RussianEnabled;
+        TypoCorrector.RussianEnabled = true;
+        try
+        {
+            var boundary = new BoundaryEngine(new DecisionEngine());
+            Assert.Equal("Правительство", boundary.Complete("Правительсво", " ").Replacement);
+            Assert.Equal("Правительсво", boundary.Complete("Правительсво", " ").Replacement);
+            Assert.Equal("правительство.", boundary.Complete("правительсво.", " ").Replacement);
+            Assert.Equal("Правительство", boundary.Complete("Правительсво", " ").Replacement);
+        }
+        finally { TypoCorrector.RussianEnabled = saved; }
+    }
 }

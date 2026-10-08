@@ -30,6 +30,19 @@ public sealed class BoundaryEngine(DecisionEngine engine, bool legacy = false,
         if (suggestion.ShouldCorrect) return new(suggestion.Corrected, false, suggestion.Reason);
         return new(converted, true, "manual-layout");
     }
+    /// <summary>What successive Pause presses offer, like T9 cycling: <see cref="Manual"/> first, then up to two
+    /// further spellings of a misspelled word (same script, no layout switch). After the last one Pause restores the
+    /// typed word.</summary>
+    public IReadOnlyList<ManualFix> ManualOptions(string token, IEnumerable<string>? exceptions = null)
+    {
+        var first = Manual(token, exceptions);
+        var options = new List<ManualFix> { first };
+        if (token.All(char.IsLetter))
+            foreach (var spelled in typo.Alternatives(token, first.Replacement, exceptions: exceptions))
+                options.Add(new(spelled, false, "manual-alternative"));
+        return options;
+    }
+
     public BoundaryResult Complete(string token, string separator, IEnumerable<string>? exceptions = null)
     {
         if (token.Length == 0)

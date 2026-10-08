@@ -142,6 +142,15 @@ static class PairEval
                 // Manual mode (Pause on a misspelled word, no context): would the suggestion be the intended word?
                 if (!clean && !ignored && corrector.Suggest(word, null, null, null, TypoPolicy.Manual with { MinMargin = 0, RussianMinMargin = 0 }) is { ShouldCorrect: true } suggestion)
                     counts.Suggestions.Add((suggestion.Confidence, Normalize(suggestion.Corrected) == Normalize(expected)));
+                // Pause pressed up to three times (shipped threshold, then the alternatives): is the intended word offered?
+                if (!clean && !ignored)
+                {
+                    var first = corrector.Suggest(word);
+                    var offered = (first.ShouldCorrect ? new[] { first.Corrected } : Array.Empty<string>())
+                        .Concat(corrector.Alternatives(word, first.ShouldCorrect ? first.Corrected : null)).ToList();
+                    if (offered.Count > 0) counts.PauseOffered++;
+                    if (offered.Any(o => Normalize(o) == Normalize(expected))) counts.PauseOfferedRight++;
+                }
                 if (!ignored)
                     foreach (var variant in variants)
                     {
@@ -257,6 +266,8 @@ sealed class PairCounts
     // Changes of gold-kept words scored with the owner's verdicts: right, wrong, still a false change; how many such
     // changes have no verdict yet (counted as false), and how many reviewed words are typos (added to Typos).
     public int ReviewedRight, ReviewedWrong, ReviewedFalse, Unreviewed, ReviewedTypos;
+    // Typos for which Pause (up to three presses) offers any spelling, and offers the intended one.
+    public int PauseOffered, PauseOfferedRight;
     public void Review((string Verdict, string Proposed, string Intended)? label, string corrected)
     {
         switch (label?.Verdict)
@@ -295,6 +306,7 @@ sealed class PairCounts
         FalseRows.AddRange(other.FalseRows);
         ReviewedRight += other.ReviewedRight; ReviewedWrong += other.ReviewedWrong; ReviewedFalse += other.ReviewedFalse;
         Unreviewed += other.Unreviewed; ReviewedTypos += other.ReviewedTypos;
+        PauseOffered += other.PauseOffered; PauseOfferedRight += other.PauseOfferedRight;
         foreach (var (k, v) in other.MissReasons) MissReasons[k] = MissReasons.GetValueOrDefault(k) + v;
         foreach (var (k, v) in other.RealWordTypos) RealWordTypos[k] = RealWordTypos.GetValueOrDefault(k) + v;
         foreach (var example in other.RealWordExamples) AddExample(RealWordExamples, example);
@@ -311,6 +323,7 @@ sealed class PairCounts
             ChangePrecision = Math.Round((double)Corrected / Math.Max(1, changes), 4),
             Recall = Math.Round((double)Corrected / Math.Max(1, Typos), 4),
             FalseCorrectionRate = Math.Round((double)FalseCorrections / Math.Max(1, CleanWords), 5),
+            PauseOptions = new { Offered = PauseOffered, Right = PauseOfferedRight, Coverage = Math.Round((double)PauseOfferedRight / Math.Max(1, Typos), 4) },
             // The same with the owner's verdicts on changes of gold-kept words (null without a review file).
             Reviewed = ReviewedRight + ReviewedWrong + ReviewedFalse == 0 ? null : new
             {
