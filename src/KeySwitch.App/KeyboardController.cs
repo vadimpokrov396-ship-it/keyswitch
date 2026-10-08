@@ -260,7 +260,7 @@ internal sealed class KeyboardController : IDisposable
             string? undoIdentity = await guard.GetSafeIdentityAsync(target);
             if (!SameIdentity(prior.Identity, undoIdentity) || !guard.IsSame(target) || InputRevision != revision) return;
             // Pause again: the next spelling (T9-like), after the last one the typed word.
-            if (prior.Options is { } options && prior.OptionIndex + 1 < options.Count) NextOption(prior, options[prior.OptionIndex + 1]);
+            if (prior.Options is { } cycle && prior.OptionIndex + 1 < cycle.Count) NextOption(prior, cycle[prior.OptionIndex + 1]);
             else Undo(prior);
             return;
         }
