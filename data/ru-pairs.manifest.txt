@@ -1,0 +1,5 @@
+# Built by tools/build_ru_pairs.py (min count 3, previous words 16383)
+forms ru-typo.txt sha256 8ee227047898d276159fb806c66eb8eadf6a81dad0ba491b87d7496249a67b2c
+pack rus_news_2020_1M.tar.gz sha256 f522a9cccc1d63a5f2ccf11a47e144dd5abd1c840e8ccfb90c249630aaad4657
+pack rus_wikipedia_2021_1M.tar.gz sha256 f87d687024ccf3b586aa8b666f2928a369aae9064bfc3b22149087e79ec7ab5b
+output ru-pairs.bin pairs 781083 sha256 9def1d09d8dd9f8fe7e9e7c7050b47bb31f7b151365af7e95a8e0e426879c20f
