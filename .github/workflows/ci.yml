@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: 'ci = normal checks; build-ru-dictionary = rebuild data/ru-typo*.txt and data/ru-pairs.bin from the pinned Leipzig packs and commit them to this branch; typo-final-test = the one-off held-out RU typo evaluation; dev-label-review = commit eval/dev_label_review.tsv (dev changes of words the gold standard kept) for an owner review'
+        description: 'ci = normal checks; build-ru-dictionary = rebuild data/ru-typo*.txt and data/ru-pairs.bin from the pinned Leipzig packs and commit them to this branch; typo-final-test = the one-off held-out RU typo evaluation; dev-label-review = commit eval/dev_label_review.tsv (dev changes of words the gold standard kept) for an owner review; appends only rows it does not list yet'
         type: choice
         options: [ci, build-ru-dictionary, typo-final-test, dev-label-review]
         default: ci
@@ -138,8 +138,9 @@ jobs:
               print("|---:|---:|---:|")
               for t, r in manual.items():
                   print(f"| {t} | {r['Accuracy']:.2%} | {r['Coverage']:.2%} |")
-          pause = json.load(open("eval/dev.report.json"))["total"]["PauseOptions"]
-          print(f"\nPause up to three presses (dev): intended spelling offered for {pause['Right']} typos ({pause['Coverage']:.2%}); some spelling offered for {pause['Offered']}.\n")
+          for part in parts:
+              pause = json.load(open(f"eval/{part}.report.json"))["total"]["PauseOptions"]
+              print(f"\nPause up to three presses ({part}): intended spelling offered for {pause['Right']} typos ({pause['Coverage']:.2%}); some spelling offered for {pause['Offered']}.\n")
           print("\n### Auto-correction confidence threshold sweep (dev)\n")
           print("| threshold | precision | recall | false rate |")
           print("|---:|---:|---:|---:|")
@@ -191,14 +192,36 @@ jobs:
           path: typo-eval
       - name: Commit eval/dev_label_review.tsv to ${{ github.ref_name }}
         run: |
-          # A file that is already under review is never overwritten.
-          if [ -e eval/dev_label_review.tsv ]; then echo "::notice::eval/dev_label_review.tsv exists; not overwritten"; exit 0; fi
+          # A file under review keeps every row and verdict; only changes it does not list yet are appended.
           mkdir -p eval
-          cp typo-eval/dev.report.false.tsv eval/dev_label_review.tsv
-          echo "$(grep -vc '^#' eval/dev_label_review.tsv) lines (with header)"
+          python3 - <<'PY'
+          import pathlib
+          new_path, path = pathlib.Path("typo-eval/dev.report.false.tsv"), pathlib.Path("eval/dev_label_review.tsv")
+          if not path.exists():
+              path.write_text(new_path.read_text(encoding="utf-8"), encoding="utf-8")
+              raise SystemExit
+          def unquote(f): return f[1:-1].replace('""', '"') if len(f) >= 2 and f[0] == f[-1] == '"' else f
+          def rows(p): return [l.rstrip("\n").split("\t") for l in p.read_text(encoding="utf-8").splitlines() if l and not l.startswith("#")]
+          old_rows, fresh = rows(path), rows(new_path)
+          head = old_rows[0]
+          key = lambda r, h: tuple(unquote(r[h.index(k)]) for k in ("set", "context", "gold_word"))
+          known = {key(r, head) for r in old_rows[1:]}
+          next_id = max(int(unquote(r[0])) for r in old_rows[1:]) + 1 if len(old_rows) > 1 else 1
+          added = []
+          for r in fresh[1:]:
+              if key(r, fresh[0]) not in known:
+                  added.append("\t".join([str(next_id)] + r[1:]))
+                  next_id += 1
+          text = path.read_text(encoding="utf-8")
+          with path.open("a", encoding="utf-8") as f:
+              if added and not text.endswith("\n"): f.write("\n")
+              for line in added: f.write(line + "\n")
+          print(f"{len(added)} new rows appended")
+          PY
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add eval/dev_label_review.tsv
+          if git diff --cached --quiet; then echo "No new rows"; exit 0; fi
           git commit -m "Dev label review: changes of words the gold standard kept (workflow_dispatch run ${{ github.run_id }})"
           git push origin "HEAD:${{ github.ref_name }}"
 
