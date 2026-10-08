@@ -93,8 +93,9 @@ public sealed class BoundaryEngine(DecisionEngine engine, bool legacy = false,
             {
                 var allTypoExceptions = exceptions is null ? TypoExceptions :
                     TypoExceptions is null ? exceptions : exceptions.Concat(TypoExceptions);
+                // The context is reset at a sentence end, Enter and Tab: an empty context is a sentence start.
                 var typoDecision = typo.Evaluate(replacement[start..end], context.LastOrDefault(),
-                    context.Count > 1 ? context[^2] : null, allTypoExceptions);
+                    context.Count > 1 ? context[^2] : null, allTypoExceptions, TypoPolicy.Auto, context.Count == 0);
                 if (typoDecision.ShouldCorrect)
                 {
                     replacement = replacement[..start] + typoDecision.Corrected + replacement[end..];

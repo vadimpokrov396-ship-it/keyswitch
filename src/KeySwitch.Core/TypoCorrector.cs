@@ -130,12 +130,29 @@ public sealed class TypoCorrector
     /// while Russian auto-correction is off and has a lower bar. A capitalized word is fixed in lower case and
     /// re-capitalized.</summary>
     public TypoDecision Suggest(string word, string? previous = null, string? previous2 = null,
-        IEnumerable<string>? exceptions = null, TypoPolicy? policy = null)
+        IEnumerable<string>? exceptions = null, TypoPolicy? policy = null) =>
+        EvaluateCapitalized(word, previous, previous2, exceptions, policy ?? TypoPolicy.Manual, 0);
+
+    /// <summary>Automatic correction with the position in the sentence: a Russian word written with a capital only
+    /// because it starts a sentence ("Предлагю") is checked in lower case and re-capitalized when the policy allows
+    /// it (<see cref="TypoPolicy.SentenceStartCapitals"/>, with at least <see cref="TypoPolicy.CapitalMinMargin"/> lead,
+    /// since unknown names also start sentences). Elsewhere capitalized words stay protected.</summary>
+    public TypoDecision Evaluate(string word, string? previous, string? previous2, IEnumerable<string>? exceptions, TypoPolicy policy, bool sentenceStart)
     {
-        bool capitalized = word.Length > 1 && char.IsUpper(word[0]) && !word.Skip(1).Any(char.IsUpper);
+        if (!sentenceStart || !policy.SentenceStartCapitals || !IsCapitalized(word) || !word.All(c => c is >= 'а' and <= 'я' or >= 'А' and <= 'Я' or 'ё' or 'Ё'))
+            return Evaluate(word, previous, previous2, exceptions, policy);
+        return EvaluateCapitalized(word, previous, previous2, exceptions, policy, policy.CapitalMinMargin);
+    }
+
+    private static bool IsCapitalized(string word) => word.Length > 1 && char.IsUpper(word[0]) && !word.Skip(1).Any(char.IsUpper);
+
+    private TypoDecision EvaluateCapitalized(string word, string? previous, string? previous2, IEnumerable<string>? exceptions, TypoPolicy policy, double minLead)
+    {
+        bool capitalized = IsCapitalized(word);
         string lower = capitalized ? char.ToLowerInvariant(word[0]) + word[1..] : word;
-        var decision = Evaluate(lower, previous, previous2, exceptions, policy ?? TypoPolicy.Manual);
+        var decision = Evaluate(lower, previous, previous2, exceptions, policy);
         if (!decision.ShouldCorrect || !capitalized) return decision with { Original = word };
+        if (decision.Confidence < minLead) return new(false, word, word, 0, "ambiguous-capital");
         return decision with { Original = word, Corrected = char.ToUpperInvariant(decision.Corrected[0]) + decision.Corrected[1..] };
     }
 
@@ -453,6 +470,11 @@ public sealed record TypoPolicy(double MinMargin, double RussianMinMargin, int R
     public double RealWordMargin { get; init; } = double.PositiveInfinity;
     /// <summary>Real-word errors: minimum corpus count of (previous word, intended word).</summary>
     public double RealWordMinPairs { get; init; } = 20;
+    /// <summary>Check Russian words capitalized at the start of a sentence in lower case (off: they stay protected
+    /// like names).</summary>
+    public bool SentenceStartCapitals { get; init; }
+    /// <summary>Minimum lead for a correction of such a capitalized word.</summary>
+    public double CapitalMinMargin { get; init; }
     /// <summary>Real-word errors: which confusions are corrected.</summary>
     public RealWordKinds RealWordKinds { get; init; } = RealWordKinds.Tsya | RealWordKinds.SecondPlural;
 }

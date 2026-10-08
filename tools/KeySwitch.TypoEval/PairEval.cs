@@ -38,6 +38,10 @@ static class PairEval
             new("auto pair veto lift<-2", autoSweep with { ContextVeto = -2 }, false),
             new("auto pair veto lift<-3", autoSweep with { ContextVeto = -3 }, false),
             new("auto context x1 + veto lift<-2", autoSweep with { ContextWeight = 1, ContextVeto = -2 }, false),
+            // Capitalized words at a sentence start (Предлагю): all words, and those words alone.
+            new("auto + sentence-start capitals, their lead >= 4", autoSweep with { SentenceStartCapitals = true, CapitalMinMargin = 4 }, false),
+            new("auto + sentence-start capitals, their lead >= 5", autoSweep with { SentenceStartCapitals = true, CapitalMinMargin = 5 }, false),
+            new("only sentence-start capitals", autoSweep with { SentenceStartCapitals = true }, false, CapitalsOnly: true),
             new("manual rank<=50k", manualSweep with { RussianRankCap = 50000 }, true),
             new("manual rank<=200k", manualSweep with { RussianRankCap = 200000 }, true),
             new("manual rank<=200k +2 edits for 8+ letters", manualSweep with { RussianRankCap = 200000, RussianDistance2MinLength = 8 }, true),
@@ -84,13 +88,17 @@ static class PairEval
         {
             string word = typed[i];
             string? expected = target[i];
+            // As in the app: the context starts empty at a sentence start (BoundaryEngine resets it after . ! ?).
+            bool sentenceStart = SentenceStart(source, matches[i]);
+            if (sentenceStart) previous = previous2 = null;
+            bool capitalStart = sentenceStart && word.Length > 1 && char.IsUpper(word[0]) && !word.Skip(1).Any(char.IsUpper);
             if (expected is null) { counts.UnalignedWords++; }
             else
             {
                 bool clean = word == expected;
                 // Case-only and е/ё-only differences are not spelling errors KeySwitch should fix.
                 bool ignored = !clean && Normalize(word) == Normalize(expected);
-                var decision = corrector.Evaluate(word, previous, previous2);
+                var decision = corrector.Evaluate(word, previous, previous2, null, TypoPolicy.Auto, sentenceStart);
                 if (clean) counts.CleanWords++;
                 else if (ignored) counts.IgnoredEdits++;
                 else counts.Typos++;
@@ -137,9 +145,9 @@ static class PairEval
                 if (!ignored)
                     foreach (var variant in variants)
                     {
-                        if (variant.Manual && clean) continue;
+                        if (variant.Manual && clean || variant.CapitalsOnly && !capitalStart) continue;
                         var result = variant.Manual ? corrector.Suggest(word, null, null, null, variant.Policy)
-                            : corrector.Evaluate(word, previous, previous2, null, variant.Policy);
+                            : corrector.Evaluate(word, previous, previous2, null, variant.Policy, sentenceStart);
                         if (result.ShouldCorrect)
                             variant.Changes.Add((result.Confidence, clean ? 2 : Normalize(result.Corrected) == Normalize(expected) ? 0 : 1));
                     }
@@ -150,6 +158,15 @@ static class PairEval
     }
 
     internal static string Normalize(string word) => word.ToLowerInvariant().Replace('ё', 'е');
+
+    /// <summary>Whether the word starts a sentence: nothing but spaces, quotes, brackets and dashes between it and
+    /// the start of the text or a . ! ? … before it.</summary>
+    private static bool SentenceStart(string source, Match match)
+    {
+        int i = match.Index - 1;
+        while (i >= 0 && (char.IsWhiteSpace(source[i]) || "\"'«»„“”([{-–—".Contains(source[i]))) i--;
+        return i < 0 || ".!?…".Contains(source[i]);
+    }
 
     private static string Key(string set, string context, string word) => set + "\t" + context + "\t" + word;
 
@@ -323,7 +340,7 @@ sealed class PairCounts
     }
 }
 
-sealed record Variant(string Name, TypoPolicy Policy, bool Manual)
+sealed record Variant(string Name, TypoPolicy Policy, bool Manual, bool CapitalsOnly = false)
 {
     // (confidence, outcome 0 = intended word, 1 = wrong word, 2 = changed a correct word)
     public List<(double Confidence, int Outcome)> Changes { get; } = new();
