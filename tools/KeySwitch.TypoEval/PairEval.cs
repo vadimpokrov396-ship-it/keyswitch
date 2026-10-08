@@ -280,7 +280,7 @@ sealed class PairCounts
                 ReviewedTypos++;
                 if (PairEval.Normalize(corrected) == PairEval.Normalize(label.Value.Intended)) ReviewedRight++; else ReviewedWrong++;
                 break;
-            case null: Unreviewed++; ReviewedFalse++; break;
+            case null or "": Unreviewed++; ReviewedFalse++; break;
             default: ReviewedFalse++; break;
         }
     }
