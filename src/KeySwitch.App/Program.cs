@@ -33,6 +33,8 @@ internal sealed class TrayApplication : ApplicationContext
     private readonly System.Windows.Forms.Timer timer;
     private readonly ToolStripMenuItem enabledItem;
     private readonly ToolStripMenuItem typoItem;
+    private readonly ToolStripMenuItem russianTypoItem;
+    private readonly ToolStripMenuItem autostartItem;
     private readonly ToolStripMenuItem grammarItem;
     private readonly ToolStripMenuItem grammarHint = new() { Enabled = false };
     private readonly GrammarClient grammarClient = new();
@@ -62,6 +64,17 @@ internal sealed class TrayApplication : ApplicationContext
         typoItem = new ToolStripMenuItem("Исправлять опечатки") { CheckOnClick = true };
         typoItem.Click += (_, _) => keyboard.TypoEnabled = typoItem.Checked;
         menu.Items.Add(typoItem);
+        // Off by default: on real typos 89% of automatic Russian fixes are right (README); Pause fixes them either way.
+        russianTypoItem = new ToolStripMenuItem("Русские опечатки — автоматически (бета)") { CheckOnClick = true,
+            ToolTipText = "Без этой галочки русские опечатки исправляются только по Pause / двойному Shift." };
+        russianTypoItem.Click += (_, _) =>
+        {
+            settings.RussianTypoEnabled = russianTypoItem.Checked;
+            TypoCorrector.RussianEnabled = settings.RussianTypoEnabled;
+            settings.Save();
+            UpdateTray();
+        };
+        menu.Items.Add(russianTypoItem);
         grammarItem = new ToolStripMenuItem("Проверка грамматики") { CheckOnClick = true };
         grammarItem.Click += (_, _) => { settings.GrammarEnabled = grammarItem.Checked; settings.Save(); UpdateTray(); };
         menu.Items.Add(grammarItem);
@@ -73,6 +86,11 @@ internal sealed class TrayApplication : ApplicationContext
         menu.Items.Add("Исключённые приложения…", null, (_, _) => OpenSettings(1));
         menu.Items.Add("Горячие клавиши…", null, (_, _) => OpenSettings(2));
         menu.Items.Add("Настройки…", null, (_, _) => OpenSettings(3));
+        autostartItem = new ToolStripMenuItem("Запускать при входе в Windows") { CheckOnClick = true };
+        autostartItem.Click += (_, _) => { Settings.AutoStart = autostartItem.Checked; UpdateTray(); };
+        menu.Items.Add(autostartItem);
+        // The registry is read when the menu opens, not on every tray refresh.
+        menu.Opening += (_, _) => autostartItem.Checked = Settings.AutoStart;
         var diagnosticsItem = new ToolStripMenuItem("Диагностика (лог)") { CheckOnClick = true, Checked = Diagnostics.Enabled };
         diagnosticsItem.Click += (_, _) => { Diagnostics.Enabled = diagnosticsItem.Checked; if (Diagnostics.Enabled) { Diagnostics.Startup(); keyboard.LogHookStatus(); } };
         menu.Items.Add(diagnosticsItem);
@@ -93,7 +111,7 @@ internal sealed class TrayApplication : ApplicationContext
         try
         {
             using var form = new SettingsForm(settings, page);
-            if (form.ShowDialog() == DialogResult.OK) { settings.Save(); UpdateTray(); }
+            if (form.ShowDialog() == DialogResult.OK) { TypoCorrector.RussianEnabled = settings.RussianTypoEnabled; settings.Save(); UpdateTray(); }
         }
         finally { keyboard.Suspended = false; }
     }
@@ -106,6 +124,8 @@ internal sealed class TrayApplication : ApplicationContext
         grammarHint.Text = $"{settings.GrammarHotkey} — грамматика выделения";
         enabledItem.Checked = settings.AutoEnabled;
         typoItem.Checked = settings.TypoEnabled;
+        russianTypoItem.Checked = settings.RussianTypoEnabled;
+        russianTypoItem.Enabled = settings.TypoEnabled;
         grammarItem.Checked = settings.GrammarEnabled;
         enabledItem.Text = settings.AutoEnabled ? "Автозамена включена" : "Автозамена выключена";
         string language = "—";

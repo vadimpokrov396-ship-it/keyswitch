@@ -299,28 +299,111 @@ public sealed class TypoCorrector
 
     /// <summary>Further spellings for Pause pressed again (after <see cref="Suggest"/>): ranked candidates of a
     /// misspelled word within <paramref name="maxLead"/> of the best one, re-capitalized like the typed word,
-    /// excluding <paramref name="first"/>. Empty for known, protected or excepted words.</summary>
-    public IReadOnlyList<string> Alternatives(string word, string? first, int max = 2, double maxLead = 6, IEnumerable<string>? exceptions = null)
+    /// excluding <paramref name="first"/>; then up to <paramref name="twoEdit"/> Russian words two edits away
+    /// (провка -> проверка) for words of at least <paramref name="twoEditMinLength"/> letters. Two edits are only
+    /// ever offered here, on request: as a first suggestion they lowered precision on the dev set.
+    /// Empty for known, protected or excepted words.</summary>
+    public IReadOnlyList<string> Alternatives(string word, string? first, int max = 2, double maxLead = 6,
+        IEnumerable<string>? exceptions = null, int twoEdit = DefaultTwoEditOptions, int twoEditMinLength = DefaultTwoEditMinLength,
+        TwoEditRanking? ranking = null)
     {
+        ranking ??= TwoEditRanking.Default;
         bool capitalized = IsCapitalized(word);
         string lower = capitalized ? char.ToLowerInvariant(word[0]) + word[1..] : word;
         var policy = TypoPolicy.Manual;
         var decision = Evaluate(lower, null, null, exceptions, policy);
-        if (!decision.ShouldCorrect && decision.Reason is not ("ambiguous-candidate" or "ambiguous-form")) return Array.Empty<string>();
+        if (!decision.ShouldCorrect && decision.Reason is not ("ambiguous-candidate" or "ambiguous-form" or "no-candidate")) return Array.Empty<string>();
         if (decision.Reason.EndsWith("-known-misspelling", StringComparison.Ordinal)) return Array.Empty<string>();
         bool russian = lower.All(c => c is >= 'а' and <= 'я' or 'ё');
-        var scored = ScoreCandidates(lower, russian, russian ? Ru.Value : En.Value, null, null, policy);
-        if (scored.Count == 0) return Array.Empty<string>();
+        var data = russian ? Ru.Value : En.Value;
         int cap = russian ? policy.RussianRankCap : policy.EnglishRankCap;
         var result = new List<string>();
-        foreach (var (entry, score, _) in scored)
+        void Add(Entry entry)
         {
-            if (result.Count >= max || scored[0].Score - score > maxLead) break;
-            if (entry.Rank > cap) continue;
             string spelled = capitalized ? char.ToUpperInvariant(entry.Word[0]) + entry.Word[1..] : entry.Word;
             if (spelled != word && spelled != first && !result.Contains(spelled)) result.Add(spelled);
         }
+        var scored = ScoreCandidates(lower, russian, data, null, null, policy);
+        bool withTwoEdits = russian && twoEdit > 0 && lower.Length >= twoEditMinLength;
+        if (withTwoEdits && ranking.Merge)
+        {
+            // One list: single- and two-edit spellings ordered by the same frequency and edit-cost score.
+            string typed = Plain(lower);
+            var pool = scored.Where(x => x.Entry.Rank <= cap && scored[0].Score - x.Score <= maxLead)
+                .Select(x => (x.Entry, Score: ranking.Score(x.Entry.Rank, ranking.Cost(typed, Plain(x.Entry.Word)))))
+                .Concat(TwoEditCandidates(lower, data, ranking)).OrderByDescending(x => x.Score);
+            foreach (var (entry, _) in pool)
+            {
+                if (result.Count >= max + twoEdit) break;
+                Add(entry);
+            }
+            return result;
+        }
+        foreach (var (entry, score, _) in scored)
+        {
+            if (result.Count >= max || scored[0].Score - score > maxLead) break;
+            if (entry.Rank <= cap) Add(entry);
+        }
+        if (withTwoEdits)
+        {
+            int limit = result.Count + twoEdit;
+            foreach (var (entry, _) in TwoEditCandidates(lower, data, ranking))
+            {
+                if (result.Count >= limit) break;
+                Add(entry);
+            }
+        }
         return result;
+    }
+
+    /// <summary>How many two-edit spellings Pause offers after the single-edit ones, and from which word length
+    /// (dev, TypoEval --pairs "Pause options").</summary>
+    public const int DefaultTwoEditOptions = 0;
+    public const int DefaultTwoEditMinLength = 6;
+    // Two-edit options come from frequent forms only: rare forms two letters away are mostly noise.
+    private const int TwoEditRankCap = 50000;
+    // The last two-edit scan (Pause asks for the same word again; TypoEval compares rankings of one word).
+    private (string Word, List<Entry> Entries)? twoEditScan;
+
+    /// <summary>Frequent Russian forms exactly two edits away, best first (a bounded scan of the forms within two
+    /// letters of the typed length).</summary>
+    private List<(Entry Entry, double Score)> TwoEditCandidates(string lower, LanguageData data, TwoEditRanking ranking)
+    {
+        string typed = Plain(lower);
+        if (twoEditScan?.Word != typed)
+        {
+            // Two edits change the set of letters by at most four: skip most forms before the edit distance.
+            static ulong Letters(string word) { ulong mask = 0; foreach (char c in word) mask |= 1UL << (c & 63); return mask; }
+            ulong typedLetters = Letters(typed);
+            var found = new List<Entry>();
+            for (int length = lower.Length - 2; length <= lower.Length + 2; length++)
+                foreach (var entry in data.OfLength(length))
+                {
+                    if (entry.Rank > TwoEditRankCap) continue;
+                    string plain = Plain(entry.Word);
+                    if (System.Numerics.BitOperations.PopCount(typedLetters ^ Letters(plain)) > 4) continue;
+                    if (EditDistance(typed, plain, 2) == 2 && !IsMisspelling(entry.Word)) found.Add(entry);
+                }
+            twoEditScan = (typed, found);
+        }
+        return twoEditScan.Value.Entries.Select(e => (e, ranking.Score(e.Rank, ranking.Cost(typed, Plain(e.Word)))))
+            .OrderByDescending(x => x.Item2).ToList();
+    }
+
+    internal static bool AdjacentRussianKeys(char a, char b)
+    {
+        string[] rows = ["йцукенгшщзхъ", "фывапролджэ", "ячсмитьбю"];
+        for (int r = 0; r < rows.Length; r++)
+        {
+            int x = rows[r].IndexOf(a);
+            if (x < 0) continue;
+            for (int other = Math.Max(0, r - 1); other <= Math.Min(rows.Length - 1, r + 1); other++)
+            {
+                int y = rows[other].IndexOf(b);
+                if (y >= 0 && Math.Abs(x - y) <= 1) return true;
+            }
+        }
+        return false;
     }
 
     private double Score(LanguageData data, string candidate, int rank, double cost, string? previous, string? previous2, bool russian, TypoPolicy policy)
@@ -526,4 +609,40 @@ public enum RealWordKinds
     SecondPlural = 2,
     /// <summary>Any other single edit towards a much more frequent word (стаей / статей).</summary>
     OtherEdit = 4,
+}
+
+/// <summary>How two-edit Pause options are ordered: frequency weight and the cost of each kind of edit (a letter
+/// the writer left out, an extra letter, a wrong letter, a neighbouring key, two letters swapped), plus
+/// <see cref="Edge"/> when the first or the last letter differs. <see cref="Merge"/> orders single- and two-edit
+/// spellings in one list instead of single edits first.</summary>
+public sealed record TwoEditRanking(double FrequencyWeight, double Missing, double Extra, double Wrong, double Neighbour, double Swapped, bool Merge)
+{
+    public double Edge { get; init; }
+    public static TwoEditRanking Default { get; } = new(1, 1.6, 1.6, 1.6, 1.6, 1.6, false);
+
+    internal double Score(int rank, double cost) => -FrequencyWeight * Math.Log(rank + 15) - 1.5 * cost;
+
+    [ThreadStatic] private static double[,]? table;
+
+    /// <summary>Cheapest way to turn the typed word into the candidate with these edit costs.</summary>
+    internal double Cost(string typed, string candidate)
+    {
+        int n = typed.Length, m = candidate.Length;
+        var d = table is { } t && t.GetLength(0) > n && t.GetLength(1) > m ? t : (table = new double[Math.Max(n, 40) + 1, Math.Max(m, 40) + 1]);
+        d[0, 0] = 0;
+        for (int i = 1; i <= n; i++) d[i, 0] = d[i - 1, 0] + Extra;
+        for (int j = 1; j <= m; j++) d[0, j] = d[0, j - 1] + Missing;
+        for (int i = 1; i <= n; i++)
+            for (int j = 1; j <= m; j++)
+            {
+                char a = typed[i - 1], b = candidate[j - 1];
+                double best = d[i - 1, j - 1] + (a == b ? 0 : TypoCorrector.AdjacentRussianKeys(a, b) ? Neighbour : Wrong);
+                best = Math.Min(best, d[i - 1, j] + Extra);
+                best = Math.Min(best, d[i, j - 1] + Missing);
+                if (i > 1 && j > 1 && a == candidate[j - 2] && typed[i - 2] == b) best = Math.Min(best, d[i - 2, j - 2] + Swapped);
+                d[i, j] = best;
+            }
+        double edge = n > 0 && m > 0 && (typed[0] != candidate[0] || typed[^1] != candidate[^1]) ? Edge : 0;
+        return d[n, m] + edge;
+    }
 }

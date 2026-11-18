@@ -15,6 +15,7 @@ internal sealed class SettingsForm : Form
     private readonly CheckBox sound = new() { Text = "Звук при исправлении", AutoSize = true };
     private readonly CheckBox doubleShift = new() { Text = "Двойной Shift: исправить слово / отменить", AutoSize = true };
     private readonly CheckBox typo = new() { Text = "Исправлять опечатки", AutoSize = true };
+    private readonly CheckBox russianTypo = new() { Text = "Русские опечатки — автоматически (бета; без галочки — только по Pause)", AutoSize = true };
     private readonly CheckBox grammarEnabled = new() { Text = "Проверка грамматики по горячей клавише", AutoSize = true };
     private Hotkey convertValue, selectionValue, toggleValue, grammarValue;
 
@@ -50,6 +51,7 @@ internal sealed class SettingsForm : Form
         sound.Checked = settings.SoundEnabled;
         doubleShift.Checked = settings.DoubleShiftEnabled;
         typo.Checked = settings.TypoEnabled;
+        russianTypo.Checked = settings.RussianTypoEnabled;
         grammarEnabled.Checked = settings.GrammarEnabled;
         grammarLanguage.Items.AddRange(new object[] { "auto", "ru-RU", "en-US" });
         grammarLanguage.SelectedItem = grammarLanguage.Items.Contains(settings.GrammarLanguage) ? settings.GrammarLanguage : "auto";
@@ -99,7 +101,7 @@ internal sealed class SettingsForm : Form
     {
         var page = new TabPage("Общие");
         var stack = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, Padding = new Padding(15) };
-        stack.Controls.Add(autostart); stack.Controls.Add(sound); stack.Controls.Add(typo); stack.Controls.Add(grammarEnabled);
+        stack.Controls.Add(autostart); stack.Controls.Add(sound); stack.Controls.Add(typo); stack.Controls.Add(russianTypo); stack.Controls.Add(grammarEnabled);
         stack.Controls.Add(new Label { Text = "Язык проверки LanguageTool:", AutoSize = true });
         stack.Controls.Add(grammarLanguage);
         var privacy = new LinkLabel { Text = "LanguageTool: политика конфиденциальности", AutoSize = true };
@@ -131,6 +133,7 @@ internal sealed class SettingsForm : Form
         settings.SoundEnabled = sound.Checked;
         settings.DoubleShiftEnabled = doubleShift.Checked;
         settings.TypoEnabled = typo.Checked;
+        settings.RussianTypoEnabled = russianTypo.Checked;
         settings.GrammarEnabled = grammarEnabled.Checked;
         settings.GrammarLanguage = grammarLanguage.SelectedItem?.ToString() ?? "auto";
         Settings.AutoStart = autostart.Checked;

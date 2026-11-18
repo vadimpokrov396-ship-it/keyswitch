@@ -141,6 +141,13 @@ jobs:
           for part in parts:
               pause = json.load(open(f"eval/{part}.report.json"))["total"]["PauseOptions"]
               print(f"\nPause up to three presses ({part}): intended spelling offered for {pause['Right']} typos ({pause['Coverage']:.2%}); some spelling offered for {pause['Offered']}.\n")
+          print("\nDev typos by edit distance to the intended word:", json.load(open("eval/dev.report.json"))["total"]["TypoDistances"])
+          print("\n### Pause options (dev): typos whose intended word is among the first N spellings offered\n")
+          print("| variant | 1 | 2 | 3 | 4 | 5 | options per typo | wrong options shown |")
+          print("|---|---:|---:|---:|---:|---:|---:|---:|")
+          for name, v in json.load(open("eval/dev.report.json"))["total"]["PauseVariants"].items():
+              w = v["WithinOptions"]
+              print(f"| {name} | " + " | ".join(f"{w[str(k)]:.2%}" for k in range(1, 6)) + f" | {v['AverageOptions']} | {v['WrongOptionsShown']} |")
           print("\n### Auto-correction confidence threshold sweep (dev)\n")
           print("| threshold | precision | recall | false rate |")
           print("|---:|---:|---:|---:|")
