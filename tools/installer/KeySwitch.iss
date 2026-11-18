@@ -1,4 +1,4 @@
-﻿; KeySwitch per-user installer (Inno Setup 6). Built in CI on Windows by tools/build-installer.ps1:
+﻿; KeySwitch per-user installer (Inno Setup 6.3 or later; CI uses the 6.7 preinstalled on windows-latest). Built in CI on Windows by tools/build-installer.ps1:
 ;   ISCC /DAppVersion=1.3.2 /DSourceExe=<path to KeySwitch.exe> /DNeedsRuntime=1 /O<dist> /FKeySwitch-Setup KeySwitch.iss
 ; No administrator rights: files go to %LocalAppData%\Programs\KeySwitch, the shortcut to the user's Start menu,
 ; autostart to HKCU\...\Run (the same value the tray item "Запускать при входе в Windows" uses).
@@ -26,8 +26,8 @@ PrivilegesRequired=lowest
 DisableProgramGroupPage=yes
 DisableDirPage=yes
 DisableReadyPage=yes
-ArchitecturesAllowed=x64
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\..\dist
 OutputBaseFilename=KeySwitch-Setup
 Compression=lzma2/max

@@ -85,6 +85,26 @@ public sealed class ManualOptionsTests
         Assert.All(Options(typed).Skip(1), o => Assert.False(o.LayoutChange));
     }
 
+    // No confident fix and no (or few) single-edit spellings: frequent words two edits away fill the free places.
+    [Theory]
+    [InlineData("поучайтся", "получается")]
+    [InlineData("териетический", "теоретический")]
+    public void TwoEditWordsFillFreePlaces(string typed, string intended)
+    {
+        var options = Options(typed);
+        Assert.Contains(intended, options.Select(o => o.Replacement));
+        Assert.InRange(options.Count, 2, 3);
+    }
+
+    // After a confident suggestion only single-edit spellings follow.
+    [Fact]
+    public void NoTwoEditWordsAfterAConfidentFix()
+    {
+        var corrector = new TypoCorrector(new DecisionEngine());
+        Assert.Equal(corrector.Alternatives("засвтра", "завтра", twoEdit: 0), corrector.Alternatives("засвтра", "завтра"));
+        Assert.DoesNotContain("завтрак", corrector.Alternatives("засвтра", "завтра"));
+    }
+
     // Known words and wrong-layout words that form a known word get no spelling alternatives.
     [Theory]
     [InlineData("привет")]

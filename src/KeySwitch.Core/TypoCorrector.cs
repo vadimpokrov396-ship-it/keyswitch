@@ -345,9 +345,10 @@ public sealed class TypoCorrector
         return result;
     }
 
-    /// <summary>Two-edit spellings in Pause options and the shortest word that gets them (dev, TypoEval --pairs
-    /// "Pause options").</summary>
-    public const int DefaultTwoEditOptions = 0;
+    /// <summary>Two-edit spellings in Pause options and the shortest word that gets them. Dev (TypoEval --pairs,
+    /// "Pause options"): the intended word is among the options for 61.07% of typos instead of 58.67%, with 0.99
+    /// instead of 0.86 options per typo; a third place gave 62.84% at 1.18, 8+ letters only 60.41%.</summary>
+    public const int DefaultTwoEditOptions = 2;
     public const int DefaultTwoEditMinLength = 6;
     // Two-edit options come from frequent forms only: rare forms two letters away are mostly noise.
     private const int TwoEditRankCap = 50000;

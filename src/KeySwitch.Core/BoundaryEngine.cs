@@ -37,9 +37,10 @@ public sealed class BoundaryEngine(DecisionEngine engine, bool legacy = false,
     {
         var first = Manual(token, exceptions);
         var options = new List<ManualFix> { first };
+        // Only a spelling fix counts as the confident suggestion; a layout conversion says nothing about spelling.
         if (token.All(char.IsLetter))
-            foreach (var spelled in typo.Alternatives(token, first.Replacement, exceptions: exceptions))
-                options.Add(new(spelled, false, "manual-alternative"));
+            foreach (var spelled in typo.Alternatives(token, first.LayoutChange ? null : first.Replacement, exceptions: exceptions))
+                if (spelled != first.Replacement) options.Add(new(spelled, false, "manual-alternative"));
         return options;
     }
 
