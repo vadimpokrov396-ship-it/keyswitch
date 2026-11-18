@@ -75,6 +75,23 @@ static class PairEval
     }
 
     private static readonly RealWordProbe[] RealWordProbes = [new(3), new(20), new(100)];
+    private static readonly BoundaryEngine Boundary = new(new DecisionEngine());
+
+    // Pause cycling variants: up to Single single-edit alternatives, then Russian words two edits away for words
+    // of MinLength+ letters — only in the places left free (Fill) or after them. Ordering the two-edit words by
+    // kind of edit, with a lower frequency weight, or in one list with the single-edit ones was measured too
+    // (dev: 61.3–61.7% for two more options whatever the order; one merged list of four 63.4% at twice the options).
+    private static readonly (string Name, int Single, int TwoEdit, int MinLength, bool Fill)[] PauseConfigs =
+    [
+        ("2 single (1.3.1)", 2, 0, 6, true),
+        ("3 single", 3, 0, 6, true),
+        ("2 in all: two-edit fills free places, 6+ letters", 2, 2, 6, true),
+        ("2 in all: two-edit fills free places, 5+ letters", 2, 2, 5, true),
+        ("2 in all: two-edit fills free places, 8+ letters", 2, 2, 8, true),
+        ("3 in all: two-edit fills free places, 6+ letters", 3, 3, 6, true),
+        ("2 single + 1 two-edit after them, 6+ letters", 2, 1, 6, false),
+        ("2 single + 2 two-edit after them, 6+ letters", 2, 2, 6, false),
+    ];
 
     private static void Evaluate(TypoCorrector corrector, string source, string correction, PairCounts counts, List<Variant> variants)
     {
@@ -101,7 +118,12 @@ static class PairEval
                 var decision = corrector.Evaluate(word, previous, previous2, null, TypoPolicy.Auto, sentenceStart);
                 if (clean) counts.CleanWords++;
                 else if (ignored) counts.IgnoredEdits++;
-                else counts.Typos++;
+                else
+                {
+                    counts.Typos++;
+                    int typoDistance = Math.Min(3, Distance(Normalize(word), Normalize(expected)));
+                    counts.TypoDistances[typoDistance] = counts.TypoDistances.GetValueOrDefault(typoDistance) + 1;
+                }
                 if (!ignored && decision.ShouldCorrect)
                 {
                     int distance = Distance(word.ToLowerInvariant(), decision.Corrected.ToLowerInvariant());
@@ -150,6 +172,21 @@ static class PairEval
                         .Concat(corrector.Alternatives(word, first.ShouldCorrect ? first.Corrected : null)).ToList();
                     if (offered.Count > 0) counts.PauseOffered++;
                     if (offered.Any(o => Normalize(o) == Normalize(expected))) counts.PauseOfferedRight++;
+                    // Pause as the app does it (BoundaryEngine.ManualOptions): what the first press gives and at which
+                    // press the intended word appears.
+                    var presses = Boundary.ManualOptions(word);
+                    int at = presses.ToList().FindIndex(o => Normalize(o.Replacement) == Normalize(expected));
+                    if (at is >= 0 and < 5) counts.PressAt[at]++;
+                    if (at != 0) { if (presses[0].LayoutChange) counts.FirstPressLayout++; else counts.FirstPressWrong++; }
+                    counts.PressOptions += presses.Count;
+                    // The same with two-edit spellings after the single-edit ones: where in the list is the intended word?
+                    foreach (var config in PauseConfigs)
+                    {
+                        var options = (first.ShouldCorrect ? new[] { first.Corrected } : Array.Empty<string>())
+                            .Concat(corrector.Alternatives(word, first.ShouldCorrect ? first.Corrected : null, config.Single, 6, null, config.TwoEdit, config.MinLength, config.Fill)).ToList();
+                        int index = options.FindIndex(o => Normalize(o) == Normalize(expected));
+                        counts.PauseConfig(config.Name).Add(index, options.Count);
+                    }
                 }
                 if (!ignored)
                     foreach (var variant in variants)
@@ -268,6 +305,14 @@ sealed class PairCounts
     public int ReviewedRight, ReviewedWrong, ReviewedFalse, Unreviewed, ReviewedTypos;
     // Typos for which Pause (up to three presses) offers any spelling, and offers the intended one.
     public int PauseOffered, PauseOfferedRight;
+    // Pause in the app: typos fixed by the 1st..5th press; first presses that gave a wrong word or converted the
+    // layout; options shown in all.
+    public int[] PressAt = new int[5];
+    public int FirstPressWrong, FirstPressLayout, PressOptions;
+    // Typos by edit distance to the intended word (3 = three or more).
+    public SortedDictionary<int, int> TypoDistances = new();
+    public Dictionary<string, PauseConfigCounts> PauseConfigs = new(StringComparer.Ordinal);
+    public PauseConfigCounts PauseConfig(string name) => PauseConfigs.TryGetValue(name, out var c) ? c : (PauseConfigs[name] = new PauseConfigCounts());
     public void Review((string Verdict, string Proposed, string Intended)? label, string corrected)
     {
         switch (label?.Verdict)
@@ -307,6 +352,10 @@ sealed class PairCounts
         ReviewedRight += other.ReviewedRight; ReviewedWrong += other.ReviewedWrong; ReviewedFalse += other.ReviewedFalse;
         Unreviewed += other.Unreviewed; ReviewedTypos += other.ReviewedTypos;
         PauseOffered += other.PauseOffered; PauseOfferedRight += other.PauseOfferedRight;
+        for (int i = 0; i < PressAt.Length; i++) PressAt[i] += other.PressAt[i];
+        FirstPressWrong += other.FirstPressWrong; FirstPressLayout += other.FirstPressLayout; PressOptions += other.PressOptions;
+        foreach (var (k, v) in other.TypoDistances) TypoDistances[k] = TypoDistances.GetValueOrDefault(k) + v;
+        foreach (var (name, c) in other.PauseConfigs) PauseConfig(name).Add(c);
         foreach (var (k, v) in other.MissReasons) MissReasons[k] = MissReasons.GetValueOrDefault(k) + v;
         foreach (var (k, v) in other.RealWordTypos) RealWordTypos[k] = RealWordTypos.GetValueOrDefault(k) + v;
         foreach (var example in other.RealWordExamples) AddExample(RealWordExamples, example);
@@ -324,6 +373,22 @@ sealed class PairCounts
             Recall = Math.Round((double)Corrected / Math.Max(1, Typos), 4),
             FalseCorrectionRate = Math.Round((double)FalseCorrections / Math.Max(1, CleanWords), 5),
             PauseOptions = new { Offered = PauseOffered, Right = PauseOfferedRight, Coverage = Math.Round((double)PauseOfferedRight / Math.Max(1, Typos), 4) },
+            PausePresses = new
+            {
+                FixedWithin = Enumerable.Range(1, 5).ToDictionary(k => k.ToString(), k => Math.Round((double)PressAt.Take(k).Sum() / Math.Max(1, Typos), 4)),
+                FirstPressRight = PressAt[0], FirstPressWrongWord = FirstPressWrong, FirstPressLayoutConversion = FirstPressLayout,
+                // Among first presses that changed the spelling: how many gave the intended word.
+                FirstPressSpellingPrecision = Math.Round((double)PressAt[0] / Math.Max(1, PressAt[0] + FirstPressWrong), 4),
+                AverageOptions = Math.Round((double)PressOptions / Math.Max(1, Typos), 2),
+            },
+            TypoDistances = TypoDistances.ToDictionary(x => x.Key == 3 ? "3+" : x.Key.ToString(), x => x.Value),
+            // Per cycling variant: typos whose intended word is the 1st..5th option, and the options offered per typo.
+            PauseVariants = PauseConfigs.ToDictionary(x => x.Key, x => new
+            {
+                WithinOptions = Enumerable.Range(1, 5).ToDictionary(k => k.ToString(), k => Math.Round((double)x.Value.At.Take(k).Sum() / Math.Max(1, Typos), 4)),
+                AverageOptions = Math.Round((double)x.Value.Options / Math.Max(1, Typos), 2),
+                WrongOptionsShown = x.Value.Options - x.Value.At.Sum(),
+            }),
             // The same with the owner's verdicts on changes of gold-kept words (null without a review file).
             Reviewed = ReviewedRight + ReviewedWrong + ReviewedFalse == 0 ? null : new
             {
@@ -399,4 +464,13 @@ sealed class RealWordProbe(double minPairs)
             })),
         Examples,
     };
+}
+
+/// <summary>Where the intended word is among the Pause options of one cycling variant.</summary>
+sealed class PauseConfigCounts
+{
+    public int[] At = new int[5];
+    public int Options;
+    public void Add(int index, int options) { if (index is >= 0 and < 5) At[index]++; Options += options; }
+    public void Add(PauseConfigCounts other) { for (int i = 0; i < At.Length; i++) At[i] += other.At[i]; Options += other.Options; }
 }

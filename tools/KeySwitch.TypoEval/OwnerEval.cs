@@ -16,8 +16,8 @@ static class OwnerEval
                 { RealWordMargin = 3, RealWordKinds = RealWordKinds.Tsya | RealWordKinds.SecondPlural | RealWordKinds.OtherEdit })),
             ("auto +2 edits (8+ letters)", (w, p, p2) => corrector.Evaluate(w, p, p2, null, TypoPolicy.Auto with { RussianDistance2MinLength = 8 })),
         };
-        Console.WriteLine("| typo | intended | " + string.Join(" | ", modes.Select(m => m.Name)) + " |");
-        Console.WriteLine("|---|---|" + string.Concat(modes.Select(_ => "---|")));
+        Console.WriteLine("| typo | intended | " + string.Join(" | ", modes.Select(m => m.Name)) + " | Pause pressed again, single edits only (1.3.1) | Pause pressed again (two-edit words in free places) |");
+        Console.WriteLine("|---|---|" + string.Concat(modes.Select(_ => "---|")) + "---|---|");
         foreach (var line in File.ReadLines(path))
         {
             if (line.TrimStart().StartsWith('#')) continue;
@@ -32,7 +32,16 @@ static class OwnerEval
                 if (!d.ShouldCorrect) return $"— ({d.Reason})";
                 return (d.Corrected == intended ? "✅ " : "❌ ") + $"{d.Corrected} ({d.Confidence:0.0})";
             });
-            Console.WriteLine($"| {parts[0]} | {parts[1]} | " + string.Join(" | ", cells) + " |");
+            // What repeated Pause offers: the confident suggestion (if any), then the alternatives —
+            // as shipped, and with two two-edit spellings for comparison.
+            var first = corrector.Suggest(typed[^1]);
+            string Cycle(int twoEdit)
+            {
+                var options = (first.ShouldCorrect ? new[] { first.Corrected } : Array.Empty<string>())
+                    .Concat(corrector.Alternatives(typed[^1], first.ShouldCorrect ? first.Corrected : null, twoEdit: twoEdit)).ToList();
+                return options.Count == 0 ? "—" : string.Join(", ", options.Select(o => o == intended ? $"✅ {o}" : o));
+            }
+            Console.WriteLine($"| {parts[0]} | {parts[1]} | " + string.Join(" | ", cells) + $" | {Cycle(0)} | {Cycle(TypoCorrector.DefaultTwoEditOptions)} |");
         }
     }
 }

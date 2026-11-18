@@ -7,7 +7,9 @@ internal sealed class Settings
 {
     public bool AutoEnabled { get; set; } = true;
     public bool TypoEnabled { get; set; } = true;
-    public bool RussianTypoEnabled { get; set; } = false;   // 1.2: RU typo precision 66% -> off by default
+    // Automatic Russian typo fixes: off until at least 95% of them are right on the test split (1.3.1: 89%).
+    // Tray: «Русские опечатки — автоматически (бета)». Pause fixes Russian typos either way.
+    public bool RussianTypoEnabled { get; set; } = false;
     public bool GrammarEnabled { get; set; } = true;
     public bool GrammarConsent { get; set; }
     public string GrammarLanguage { get; set; } = "auto";

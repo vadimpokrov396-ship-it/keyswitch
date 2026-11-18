@@ -18,28 +18,51 @@ public sealed class BoundaryEngine(DecisionEngine engine, bool legacy = false,
     public static bool IsTokenCharacter(char c) => char.IsLetterOrDigit(c) || "`,.;'[]~{}:\"<>@/_-\\#?&=%+".Contains(c);
     public void Reset() { context.Clear(); previousUnconvertedShort = null; }
 
-    /// <summary>What Pause / double Shift does to a word: text typed in the wrong layout that forms a known word
-    /// is converted; otherwise a confident spelling fix (typo-manual) is applied; otherwise the layout conversion
-    /// as before. Spelling fixes keep the script, so no layout switch follows.</summary>
-    public ManualFix Manual(string token, IEnumerable<string>? exceptions = null)
+    /// <summary>What the first Pause / double Shift does to a word: the first of <see cref="ManualOptions"/>.</summary>
+    public ManualFix Manual(string token, IEnumerable<string>? exceptions = null) => ManualOptions(token, exceptions)[0];
+
+    /// <summary>What successive Pause presses offer, like T9 cycling; after the last option Pause restores the typed
+    /// word. Spelling fixes keep the script, so no layout switch follows them.
+    /// 1. Text typed in the wrong layout that forms a known word: the layout conversion.
+    /// 2. Otherwise a confident spelling fix (typo-manual), then up to two further spellings.
+    /// 3. Otherwise, when the word does not look like wrong-layout text and has spellings (also frequent words two
+    ///    edits away): the best spelling first, then the others, the layout conversion last. Until 1.3.1 the layout
+    ///    conversion came first here, which turned most Russian typos into Latin gibberish on the first press.
+    /// 4. Otherwise the layout conversion, then any spellings.</summary>
+    public IReadOnlyList<ManualFix> ManualOptions(string token, IEnumerable<string>? exceptions = null)
     {
         string converted = LayoutMap.Convert(token);
         bool convertedRussian = converted.Any(c => c is >= 'а' and <= 'я' or >= 'А' and <= 'Я' or 'ё' or 'Ё');
-        if (converted.All(char.IsLetter) && engine.IsKnownWord(converted, convertedRussian)) return new(converted, true, "manual-layout-known");
-        var suggestion = typo.Suggest(token, null, null, exceptions);
-        if (suggestion.ShouldCorrect) return new(suggestion.Corrected, false, suggestion.Reason);
-        return new(converted, true, "manual-layout");
-    }
-    /// <summary>What successive Pause presses offer, like T9 cycling: <see cref="Manual"/> first, then up to two
-    /// further spellings of a misspelled word (same script, no layout switch). After the last one Pause restores the
-    /// typed word.</summary>
-    public IReadOnlyList<ManualFix> ManualOptions(string token, IEnumerable<string>? exceptions = null)
-    {
-        var first = Manual(token, exceptions);
-        var options = new List<ManualFix> { first };
-        if (token.All(char.IsLetter))
-            foreach (var spelled in typo.Alternatives(token, first.Replacement, exceptions: exceptions))
-                options.Add(new(spelled, false, "manual-alternative"));
+        bool letters = token.All(char.IsLetter);
+        bool layoutKnown = converted.All(char.IsLetter) && engine.IsKnownWord(converted, convertedRussian);
+        var suggestion = layoutKnown ? null : typo.Suggest(token, null, null, exceptions);
+        bool confident = suggestion is { ShouldCorrect: true };
+        // Only a spelling fix counts as the confident suggestion; a layout conversion says nothing about spelling.
+        var spellings = !letters ? new List<ManualFix>() :
+            typo.Alternatives(token, confident ? suggestion!.Corrected : null, exceptions: exceptions)
+                .Where(spelled => spelled != converted).Select(spelled => new ManualFix(spelled, false, "manual-alternative")).ToList();
+        var options = new List<ManualFix>();
+        if (layoutKnown)
+        {
+            options.Add(new(converted, true, "manual-layout-known"));
+            options.AddRange(spellings);
+        }
+        else if (confident)
+        {
+            options.Add(new(suggestion!.Corrected, false, suggestion.Reason));
+            options.AddRange(spellings.Where(x => x.Replacement != suggestion.Corrected));
+        }
+        else if (spellings.Count > 0 && !engine.Evaluate(token, null, null, exceptions).ShouldConvert)
+        {
+            options.Add(spellings[0] with { Reason = "manual-spelling" });
+            options.AddRange(spellings.Skip(1));
+            options.Add(new(converted, true, "manual-layout"));
+        }
+        else
+        {
+            options.Add(new(converted, true, "manual-layout"));
+            options.AddRange(spellings);
+        }
         return options;
     }
 

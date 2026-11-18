@@ -299,28 +299,80 @@ public sealed class TypoCorrector
 
     /// <summary>Further spellings for Pause pressed again (after <see cref="Suggest"/>): ranked candidates of a
     /// misspelled word within <paramref name="maxLead"/> of the best one, re-capitalized like the typed word,
-    /// excluding <paramref name="first"/>. Empty for known, protected or excepted words.</summary>
-    public IReadOnlyList<string> Alternatives(string word, string? first, int max = 2, double maxLead = 6, IEnumerable<string>? exceptions = null)
+    /// excluding <paramref name="first"/>. When there is no confident <paramref name="first"/> suggestion and fewer
+    /// than <paramref name="max"/> are found, frequent Russian words two edits away fill the free places
+    /// (поучайтся -> получается), for words of at least
+    /// <paramref name="twoEditMinLength"/> letters. Two edits are only ever offered here, on request: as a first
+    /// suggestion they lowered precision on the dev set. Empty for known, protected or excepted words.</summary>
+    /// <param name="twoEdit">At most this many two-edit spellings.</param>
+    /// <param name="twoEditFill">True: only in places single-edit spellings left free; false: after them.</param>
+    public IReadOnlyList<string> Alternatives(string word, string? first, int max = 2, double maxLead = 6,
+        IEnumerable<string>? exceptions = null, int twoEdit = DefaultTwoEditOptions, int twoEditMinLength = DefaultTwoEditMinLength,
+        bool twoEditFill = true)
     {
         bool capitalized = IsCapitalized(word);
         string lower = capitalized ? char.ToLowerInvariant(word[0]) + word[1..] : word;
         var policy = TypoPolicy.Manual;
         var decision = Evaluate(lower, null, null, exceptions, policy);
-        if (!decision.ShouldCorrect && decision.Reason is not ("ambiguous-candidate" or "ambiguous-form")) return Array.Empty<string>();
+        if (!decision.ShouldCorrect && decision.Reason is not ("ambiguous-candidate" or "ambiguous-form" or "no-candidate")) return Array.Empty<string>();
         if (decision.Reason.EndsWith("-known-misspelling", StringComparison.Ordinal)) return Array.Empty<string>();
         bool russian = lower.All(c => c is >= 'а' and <= 'я' or 'ё');
-        var scored = ScoreCandidates(lower, russian, russian ? Ru.Value : En.Value, null, null, policy);
-        if (scored.Count == 0) return Array.Empty<string>();
+        var data = russian ? Ru.Value : En.Value;
         int cap = russian ? policy.RussianRankCap : policy.EnglishRankCap;
         var result = new List<string>();
-        foreach (var (entry, score, _) in scored)
+        void Add(Entry entry)
         {
-            if (result.Count >= max || scored[0].Score - score > maxLead) break;
-            if (entry.Rank > cap) continue;
             string spelled = capitalized ? char.ToUpperInvariant(entry.Word[0]) + entry.Word[1..] : entry.Word;
             if (spelled != word && spelled != first && !result.Contains(spelled)) result.Add(spelled);
         }
+        var scored = ScoreCandidates(lower, russian, data, null, null, policy);
+        foreach (var (entry, score, _) in scored)
+        {
+            if (result.Count >= max || scored[0].Score - score > maxLead) break;
+            if (entry.Rank <= cap) Add(entry);
+        }
+        // Not after a confident suggestion: it is right 19 times out of 20, more options would only add key presses.
+        if (russian && twoEdit > 0 && first is null && lower.Length >= twoEditMinLength)
+        {
+            int limit = twoEditFill ? Math.Min(max, result.Count + twoEdit) : result.Count + twoEdit;
+            if (result.Count < limit)
+                foreach (var entry in TwoEditCandidates(lower, data))
+                {
+                    if (result.Count >= limit) break;
+                    Add(entry);
+                }
+        }
         return result;
+    }
+
+    /// <summary>Two-edit spellings in Pause options and the shortest word that gets them. Dev (TypoEval --pairs,
+    /// "Pause options"): the intended word is among the options for 61.07% of typos instead of 58.67%, with 0.99
+    /// instead of 0.86 options per typo; a third place gave 62.84% at 1.18, 8+ letters only 60.41%.</summary>
+    public const int DefaultTwoEditOptions = 2;
+    public const int DefaultTwoEditMinLength = 6;
+    // Two-edit options come from frequent forms only: rare forms two letters away are mostly noise.
+    private const int TwoEditRankCap = 50000;
+
+    /// <summary>Frequent Russian forms exactly two edits away, most frequent first (a bounded scan of the forms
+    /// within two letters of the typed length). Ordering them by the kind of edit, with a lower frequency weight
+    /// or in one list with the single-edit spellings was measured on dev and gave no gain for two options.</summary>
+    private static List<Entry> TwoEditCandidates(string lower, LanguageData data)
+    {
+        string typed = Plain(lower);
+        // Two edits change the set of letters by at most four: skip most forms before the edit distance.
+        static ulong Letters(string word) { ulong mask = 0; foreach (char c in word) mask |= 1UL << (c & 63); return mask; }
+        ulong typedLetters = Letters(typed);
+        var found = new List<Entry>();
+        for (int length = lower.Length - 2; length <= lower.Length + 2; length++)
+            foreach (var entry in data.OfLength(length))
+            {
+                if (entry.Rank > TwoEditRankCap) continue;
+                string plain = Plain(entry.Word);
+                if (System.Numerics.BitOperations.PopCount(typedLetters ^ Letters(plain)) > 4) continue;
+                if (EditDistance(typed, plain, 2) == 2 && !IsMisspelling(entry.Word)) found.Add(entry);
+            }
+        found.Sort((a, b) => a.Rank.CompareTo(b.Rank));
+        return found;
     }
 
     private double Score(LanguageData data, string candidate, int rank, double cost, string? previous, string? previous2, bool russian, TypoPolicy policy)
