@@ -75,6 +75,7 @@ static class PairEval
     }
 
     private static readonly RealWordProbe[] RealWordProbes = [new(3), new(20), new(100)];
+    private static readonly BoundaryEngine Boundary = new(new DecisionEngine());
 
     // Pause cycling variants: up to Single single-edit alternatives, then Russian words two edits away for words
     // of MinLength+ letters — only in the places left free (Fill) or after them. Ordering the two-edit words by
@@ -171,6 +172,13 @@ static class PairEval
                         .Concat(corrector.Alternatives(word, first.ShouldCorrect ? first.Corrected : null)).ToList();
                     if (offered.Count > 0) counts.PauseOffered++;
                     if (offered.Any(o => Normalize(o) == Normalize(expected))) counts.PauseOfferedRight++;
+                    // Pause as the app does it (BoundaryEngine.ManualOptions): what the first press gives and at which
+                    // press the intended word appears.
+                    var presses = Boundary.ManualOptions(word);
+                    int at = presses.ToList().FindIndex(o => Normalize(o.Replacement) == Normalize(expected));
+                    if (at is >= 0 and < 5) counts.PressAt[at]++;
+                    if (at != 0) { if (presses[0].LayoutChange) counts.FirstPressLayout++; else counts.FirstPressWrong++; }
+                    counts.PressOptions += presses.Count;
                     // The same with two-edit spellings after the single-edit ones: where in the list is the intended word?
                     foreach (var config in PauseConfigs)
                     {
@@ -297,6 +305,10 @@ sealed class PairCounts
     public int ReviewedRight, ReviewedWrong, ReviewedFalse, Unreviewed, ReviewedTypos;
     // Typos for which Pause (up to three presses) offers any spelling, and offers the intended one.
     public int PauseOffered, PauseOfferedRight;
+    // Pause in the app: typos fixed by the 1st..5th press; first presses that gave a wrong word or converted the
+    // layout; options shown in all.
+    public int[] PressAt = new int[5];
+    public int FirstPressWrong, FirstPressLayout, PressOptions;
     // Typos by edit distance to the intended word (3 = three or more).
     public SortedDictionary<int, int> TypoDistances = new();
     public Dictionary<string, PauseConfigCounts> PauseConfigs = new(StringComparer.Ordinal);
@@ -340,6 +352,8 @@ sealed class PairCounts
         ReviewedRight += other.ReviewedRight; ReviewedWrong += other.ReviewedWrong; ReviewedFalse += other.ReviewedFalse;
         Unreviewed += other.Unreviewed; ReviewedTypos += other.ReviewedTypos;
         PauseOffered += other.PauseOffered; PauseOfferedRight += other.PauseOfferedRight;
+        for (int i = 0; i < PressAt.Length; i++) PressAt[i] += other.PressAt[i];
+        FirstPressWrong += other.FirstPressWrong; FirstPressLayout += other.FirstPressLayout; PressOptions += other.PressOptions;
         foreach (var (k, v) in other.TypoDistances) TypoDistances[k] = TypoDistances.GetValueOrDefault(k) + v;
         foreach (var (name, c) in other.PauseConfigs) PauseConfig(name).Add(c);
         foreach (var (k, v) in other.MissReasons) MissReasons[k] = MissReasons.GetValueOrDefault(k) + v;
@@ -359,6 +373,14 @@ sealed class PairCounts
             Recall = Math.Round((double)Corrected / Math.Max(1, Typos), 4),
             FalseCorrectionRate = Math.Round((double)FalseCorrections / Math.Max(1, CleanWords), 5),
             PauseOptions = new { Offered = PauseOffered, Right = PauseOfferedRight, Coverage = Math.Round((double)PauseOfferedRight / Math.Max(1, Typos), 4) },
+            PausePresses = new
+            {
+                FixedWithin = Enumerable.Range(1, 5).ToDictionary(k => k.ToString(), k => Math.Round((double)PressAt.Take(k).Sum() / Math.Max(1, Typos), 4)),
+                FirstPressRight = PressAt[0], FirstPressWrongWord = FirstPressWrong, FirstPressLayoutConversion = FirstPressLayout,
+                // Among first presses that changed the spelling: how many gave the intended word.
+                FirstPressSpellingPrecision = Math.Round((double)PressAt[0] / Math.Max(1, PressAt[0] + FirstPressWrong), 4),
+                AverageOptions = Math.Round((double)PressOptions / Math.Max(1, Typos), 2),
+            },
             TypoDistances = TypoDistances.ToDictionary(x => x.Key == 3 ? "3+" : x.Key.ToString(), x => x.Value),
             // Per cycling variant: typos whose intended word is the 1st..5th option, and the options offered per typo.
             PauseVariants = PauseConfigs.ToDictionary(x => x.Key, x => new

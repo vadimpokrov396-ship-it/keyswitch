@@ -59,11 +59,39 @@ public sealed class ManualOptionsTests
     private static IReadOnlyList<ManualFix> Options(string token) => new BoundaryEngine(new DecisionEngine()).ManualOptions(token);
 
     [Fact]
-    public void FirstOptionIsWhatPauseDidBefore()
+    public void ManualIsTheFirstOption()
     {
         var engine = new BoundaryEngine(new DecisionEngine());
         foreach (var token in new[] { "ghbdtn", "правительсво", "превет", "привет", "becuase" })
             Assert.Equal(engine.Manual(token), engine.ManualOptions(token)[0]);
+    }
+
+    // No confident fix, but the word is plainly Russian and has spellings: the best spelling comes first and the
+    // layout conversion last (until 1.3.1 the first press produced Latin gibberish here).
+    [Theory]
+    [InlineData("превет", "привет")]
+    [InlineData("поучайтся", "получается")]
+    public void BestSpellingFirstWhenNotConfident(string typed, string intended)
+    {
+        var options = Options(typed);
+        Assert.Equal(intended, options[0].Replacement);
+        Assert.False(options[0].LayoutChange);
+        Assert.Equal("manual-spelling", options[0].Reason);
+        Assert.True(options[^1].LayoutChange);
+        Assert.Equal(LayoutMap.Convert(typed), options[^1].Replacement);
+        Assert.Single(options, o => o.LayoutChange);
+    }
+
+    // Nothing to offer as a spelling: Pause converts the layout as before.
+    [Theory]
+    [InlineData("йцукенг")]
+    [InlineData("привет")]
+    [InlineData("qwrtp")]
+    public void LayoutConversionWhenThereAreNoSpellings(string typed)
+    {
+        var options = Options(typed);
+        Assert.True(options[0].LayoutChange);
+        Assert.Equal(LayoutMap.Convert(typed), options[0].Replacement);
     }
 
     [Theory]
@@ -82,7 +110,7 @@ public sealed class ManualOptionsTests
         Assert.InRange(options.Count, 1, 3);
         Assert.Equal(options.Count, options.Distinct().Count());
         Assert.DoesNotContain(typed, options);
-        Assert.All(Options(typed).Skip(1), o => Assert.False(o.LayoutChange));
+        Assert.InRange(Options(typed).Count(o => o.LayoutChange), 0, 1);
     }
 
     // No confident fix and no (or few) single-edit spellings: frequent words two edits away fill the free places.
