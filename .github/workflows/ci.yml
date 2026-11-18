@@ -310,11 +310,18 @@ jobs:
           if ($failed) { Write-Error ("Selftest failed: " + ($failed -join ', ')); exit 1 }
           Write-Host 'Selftest passed for both builds'
 
+      # Per-user installers (Inno Setup): built, installed silently, checked, selftested and uninstalled again.
+      - name: Installers (build, install, selftest, uninstall)
+        shell: pwsh
+        run: ./tools/build-installer.ps1
+
       - name: Upload packages
         uses: actions/upload-artifact@v5
         with:
           name: packages
           path: |
+            dist/KeySwitch-Setup.exe
+            dist/KeySwitch-Setup-full.exe
             dist/KeySwitch-win-x64.zip
             dist/KeySwitch-small.zip
             dist/SHA256SUMS-all
@@ -345,7 +352,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          files='release/KeySwitch-win-x64.zip release/KeySwitch-small.zip release/SHA256SUMS-all'
+          files='release/KeySwitch-Setup.exe release/KeySwitch-Setup-full.exe release/KeySwitch-win-x64.zip release/KeySwitch-small.zip release/SHA256SUMS-all'
           if gh release view '${{ github.ref_name }}' --repo '${{ github.repository }}' > /dev/null 2>&1; then
             gh release upload '${{ github.ref_name }}' $files --clobber --repo '${{ github.repository }}'
           else
