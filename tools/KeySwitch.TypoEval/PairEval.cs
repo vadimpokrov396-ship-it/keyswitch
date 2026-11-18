@@ -76,29 +76,21 @@ static class PairEval
 
     private static readonly RealWordProbe[] RealWordProbes = [new(3), new(20), new(100)];
 
-    // Pause cycling variants: single-edit alternatives, then two-edit ones for words of MinLength+ letters,
-    // ordered by frequency (weight f) and either one cost for every edit ("flat") or a cost per kind of edit ("ops");
-    // "merged" orders single- and two-edit spellings in one list.
-    private static readonly (string Name, int Single, int TwoEdit, int MinLength, TwoEditRanking? Ranking)[] PauseConfigs = BuildPauseConfigs();
-    private static (string, int, int, int, TwoEditRanking?)[] BuildPauseConfigs()
-    {
-        var list = new List<(string, int, int, int, TwoEditRanking?)> { ("2 single (1.3.1)", 2, 0, 6, null), ("3 single", 3, 0, 6, null) };
-        foreach (double f in new[] { 1.0, 0.6, 0.3 })
-            foreach (string profile in new[] { "flat", "ops", "ops+edge" })
-            {
-                var ranking = profile == "flat" ? new TwoEditRanking(f, 1.6, 1.6, 1.6, 1.6, 1.6, false)
-                    : new TwoEditRanking(f, 1.0, 1.5, 1.2, 0.9, 0.8, false) { Edge = profile == "ops" ? 0 : 0.7 };
-                string name = $"{profile} f={f:0.0}";
-                list.Add(($"2 single + 1 two-edit, {name}", 2, 1, 6, ranking));
-                list.Add(($"2 single + 2 two-edit, {name}", 2, 2, 6, ranking));
-                list.Add(($"merged, 3 in all, {name}", 2, 1, 6, ranking with { Merge = true }));
-                list.Add(($"merged, 4 in all, {name}", 2, 2, 6, ranking with { Merge = true }));
-            }
-        var chosen = new TwoEditRanking(0.3, 1.0, 1.5, 1.2, 0.9, 0.8, false) { Edge = 0.7 };
-        list.Add(("2 single + 2 two-edit, ops+edge f=0.3, 5+ letters", 2, 2, 5, chosen));
-        list.Add(("2 single + 2 two-edit, ops+edge f=0.3, 8+ letters", 2, 2, 8, chosen));
-        return list.ToArray();
-    }
+    // Pause cycling variants: up to Single single-edit alternatives, then Russian words two edits away for words
+    // of MinLength+ letters — only in the places left free (Fill) or after them. Ordering the two-edit words by
+    // kind of edit, with a lower frequency weight, or in one list with the single-edit ones was measured too
+    // (dev: 61.3–61.7% for two more options whatever the order; one merged list of four 63.4% at twice the options).
+    private static readonly (string Name, int Single, int TwoEdit, int MinLength, bool Fill)[] PauseConfigs =
+    [
+        ("2 single (1.3.1)", 2, 0, 6, true),
+        ("3 single", 3, 0, 6, true),
+        ("2 in all: two-edit fills free places, 6+ letters", 2, 2, 6, true),
+        ("2 in all: two-edit fills free places, 5+ letters", 2, 2, 5, true),
+        ("2 in all: two-edit fills free places, 8+ letters", 2, 2, 8, true),
+        ("3 in all: two-edit fills free places, 6+ letters", 3, 3, 6, true),
+        ("2 single + 1 two-edit after them, 6+ letters", 2, 1, 6, false),
+        ("2 single + 2 two-edit after them, 6+ letters", 2, 2, 6, false),
+    ];
 
     private static void Evaluate(TypoCorrector corrector, string source, string correction, PairCounts counts, List<Variant> variants)
     {
@@ -183,7 +175,7 @@ static class PairEval
                     foreach (var config in PauseConfigs)
                     {
                         var options = (first.ShouldCorrect ? new[] { first.Corrected } : Array.Empty<string>())
-                            .Concat(corrector.Alternatives(word, first.ShouldCorrect ? first.Corrected : null, config.Single, 6, null, config.TwoEdit, config.MinLength, config.Ranking)).ToList();
+                            .Concat(corrector.Alternatives(word, first.ShouldCorrect ? first.Corrected : null, config.Single, 6, null, config.TwoEdit, config.MinLength, config.Fill)).ToList();
                         int index = options.FindIndex(o => Normalize(o) == Normalize(expected));
                         counts.PauseConfig(config.Name).Add(index, options.Count);
                     }
